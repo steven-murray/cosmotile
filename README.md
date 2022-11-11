@@ -21,13 +21,15 @@
 [pre-commit]: https://github.com/pre-commit/pre-commit
 [black]: https://github.com/psf/black
 
+_Create cosmological lightcones from coeval simulations._
+
+This algorithm is taken from the code in https://github.com/piyanatk/cosmotile, but
+is repackaged and re-tooled.
+
 ## Features
 
-- TODO
-
-## Requirements
-
-- TODO
+- Fast tiling of finite, periodic cosmic simulations onto arbitrary angular coordinates.
+- Generate different realizations by translation and rotation.
 
 ## Installation
 
