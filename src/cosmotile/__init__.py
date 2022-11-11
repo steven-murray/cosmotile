@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 from astropy.cosmology import FLRW
 from astropy.cosmology import Planck18
+from astropy_healpix import HEALPix
 from scipy.ndimage import map_coordinates
 from scipy.spatial.transform import Rotation
 
@@ -114,4 +117,32 @@ def make_lightcone_slice(
         order=int(interpolation_order),
         mode="grid-wrap",  # this wraps each dimension.
         prefilter=False,
+    )
+
+
+def make_healpix_lightcone_slice(
+    nside: int, order: Literal["ring", "nested"] = "ring", **kwargs
+):
+    """
+    Create a healpix lightcone slice in angular coordinates.
+
+    This is a simple wrapper around :func:`make_lightcone_slice` that sets up angular
+    co-ordinates from a healpix grid.
+
+    Parameters
+    ----------
+    nside
+        The Nside parameter of the healpix map.
+    order
+        The ordering of the pixels in the healpix map.
+
+    Other Parameters
+    ----------------
+    All other parameters are passed through to :func:`make_lightcone_slice`.
+    """
+    hp = HEALPix(nside=nside, order=order)
+    lon, lat = hp.healpix_to_lonlat(np.arange(hp.npix))
+
+    return make_lightcone_slice(
+        latitude=lat.to_value("radian"), longitude=lon.to_value("radian"), **kwargs
     )

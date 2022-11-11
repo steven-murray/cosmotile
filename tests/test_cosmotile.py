@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation as R  # noqa: N817
 
+from cosmotile import make_healpix_lightcone_slice
 from cosmotile import make_lightcone_slice
 
 
@@ -151,3 +152,31 @@ def test_stripe(distance_to_shell):
     assert shell[3] == 0
     assert shell[4] == 0
     assert shell[5] == 0
+
+
+@pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi, None])
+@pytest.mark.parametrize("redshift", [1.0])
+@pytest.mark.parametrize("origin", [(0, 0, 0), (3, 6, -1), (1000, -1000, np.pi)])
+@pytest.mark.parametrize(
+    "rotation",
+    [
+        R.from_quat([0, 0, np.sin(np.pi / 4), np.cos(np.pi / 4)]),
+        None,
+    ],
+)
+def test_healpix(distance_to_shell, origin, rotation, redshift):
+    """Test that a random uniform box doesn't yield answers bigger than the maximum."""
+    coeval = np.random.uniform(size=(12, 13, 14))
+
+    kw = dict(
+        coeval=coeval,
+        coeval_res=1.0,
+        distance_to_shell=distance_to_shell,
+        redshift=redshift,
+        origin=origin,
+        rotation=rotation,
+        nside=16,
+    )
+
+    shell = make_healpix_lightcone_slice(**kw)
+    assert np.all(shell <= 1)
