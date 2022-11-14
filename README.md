@@ -62,6 +62,15 @@ please [file an issue] along with a detailed description.
 
 This project was generated from [@cjolowicz]'s [Hypermodern Python Cookiecutter] template.
 
+The algorithm used in this repository is derived from the `cosmotile` module in
+https://github.com/nithyanandan/AstruUtils, which was later modularised in
+https://github.com/piyanatk/cosmotile.
+
+## Acknowledgments
+
+If you find `cosmotile` useful in your project, please star this repository and, if
+applicable, cite https://arxiv.org/abs/1708.00036.
+
 [@cjolowicz]: https://github.com/cjolowicz
 [pypi]: https://pypi.org/
 [hypermodern python cookiecutter]: https://github.com/cjolowicz/cookiecutter-hypermodern-python
