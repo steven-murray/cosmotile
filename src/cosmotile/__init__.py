@@ -100,12 +100,12 @@ def make_lightcone_slice(
         ]
     )
 
-    # Apply an offset transformation if desired.
-    cart_coords += np.array(origin)[:, None]
-
     # Get a rotation matrix
     if rotation is not None:
         cart_coords = np.dot(rotation.as_matrix(), cart_coords)
+
+    # Apply an offset transformation if desired.
+    cart_coords += np.array(origin)[:, None]
 
     # Divide by the resolution so now the coordinates are in units of pixel number.
     cart_coords /= coeval_res
