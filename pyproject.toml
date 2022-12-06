@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cosmotile"
-version = "0.0.1"
+version = "0.1.0"
 description = "Cosmotile"
 authors = ["Steven Murray <steven.g.murray@asu.edu>"]
 license = "MIT"
