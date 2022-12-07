@@ -30,5 +30,7 @@ lc_slice = cosmotile.make_lightcone_slice(
 
 # To get a lightcone between 100-200 Mpc:
 distances = np.linspace(100, 200, 101)
-lc = np.zeros
+lc = np.zeros((len(lat), len(distances)))
+
+
 ```

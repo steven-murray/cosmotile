@@ -26,11 +26,9 @@ package = "cosmotile"
 python_versions = ["3.11", "3.10", "3.9", "3.8"]
 nox.needs_version = ">= 2021.6.6"
 nox.options.sessions = (
-    "pre-commit",
     "safety",
     "mypy",
     "tests",
-    "typeguard",
     "xdoctest",
     "docs-build",
 )
@@ -112,32 +110,32 @@ def activate_virtualenv_in_precommit_hooks(session: Session) -> None:
                 break
 
 
-@session(name="pre-commit", python=python_versions[0])
-def precommit(session: Session) -> None:
-    """Lint using pre-commit."""
-    args = session.posargs or [
-        "run",
-        "--all-files",
-        "--hook-stage=manual",
-        "--show-diff-on-failure",
-    ]
-    session.install(
-        "black",
-        "darglint",
-        "flake8",
-        "flake8-bandit",
-        "flake8-bugbear",
-        "flake8-docstrings",
-        "flake8-rst-docstrings",
-        "isort",
-        "pep8-naming",
-        "pre-commit",
-        "pre-commit-hooks",
-        "pyupgrade",
-    )
-    session.run("pre-commit", *args)
-    if args and args[0] == "install":
-        activate_virtualenv_in_precommit_hooks(session)
+# @session(name="pre-commit", python=python_versions[0])
+# def precommit(session: Session) -> None:
+#     """Lint using pre-commit."""
+#     args = session.posargs or [
+#         "run",
+#         "--all-files",
+#         "--hook-stage=manual",
+#         "--show-diff-on-failure",
+#     ]
+#     session.install(
+#         "black",
+#         "darglint",
+#         "flake8",
+#         "flake8-bandit",
+#         "flake8-bugbear",
+#         "flake8-docstrings",
+#         "flake8-rst-docstrings",
+#         "isort",
+#         "pep8-naming",
+#         "pre-commit",
+#         "pre-commit-hooks",
+#         "pyupgrade",
+#     )
+#     session.run("pre-commit", *args)
+#     if args and args[0] == "install":
+#         activate_virtualenv_in_precommit_hooks(session)
 
 
 @session(python=python_versions[0])
@@ -182,14 +180,6 @@ def coverage(session: Session) -> None:
         session.run("coverage", "combine")
 
     session.run("coverage", *args)
-
-
-@session(python=python_versions[0])
-def typeguard(session: Session) -> None:
-    """Runtime type checking using Typeguard."""
-    session.install(".")
-    session.install("pytest", "typeguard", "pygments")
-    session.run("pytest", f"--typeguard-packages={package}", *session.posargs)
 
 
 @session(python=python_versions)
