@@ -49,24 +49,16 @@ def make_lightcone_slice(
         The cosmology.
     interpolation_order
         The order of interpolation. Must be in the range 0-5.
+    origin
+        Define the location of the centre of the spherical shell, assuming that the
+        (0,0,0) pixel of the coeval box is at (0,0,0) in cartesian coordinates.
+    rotation
+        The rotation by which to rotate the spherical coordinates before interpolation.
+        This is done before shifting the origin, and is equivalent to rotating the
+        coeval box beforing tiling it.
     """
     if coeval.ndim != 3:
         raise ValueError("coeval must have three dimensions")
-
-    if coeval_res <= 0:
-        raise ValueError("coeval_res must be positive")
-
-    if latitude.shape != longitude.shape:
-        raise ValueError("latitude and longitude must have the same shape")
-
-    if latitude.ndim != 1:
-        raise ValueError("latitude and longitude must be 1D arrays")
-
-    if np.any(np.abs(latitude) > np.pi / 2):
-        raise ValueError("latitude must be between -pi/2 and pi/2")
-
-    if np.any((longitude < 0) | (longitude > 2 * np.pi)):
-        raise ValueError("longitude must be between 0 and 2pi")
 
     if not isinstance(cosmo, FLRW):
         raise ValueError("cosmo must be an astropy FLRW object")
@@ -89,14 +81,79 @@ def make_lightcone_slice(
     if dc is None:
         dc = cosmo.comoving_distance(redshift).value
 
+    pixel_coords = transform_to_pixel_coords(
+        coeval_res=coeval_res,
+        comoving_radius=dc,
+        latitude=latitude,
+        longitude=longitude,
+        origin=origin,
+        rotation=rotation,
+    )
+
+    # Do the interpolation
+    return map_coordinates(
+        coeval,
+        pixel_coords,
+        order=int(interpolation_order),
+        mode="grid-wrap",  # this wraps each dimension.
+        prefilter=False,
+    )
+
+
+def transform_to_pixel_coords(
+    *,
+    coeval_res: float,
+    comoving_radius: float,
+    latitude: np.ndarray,
+    longitude: np.ndarray,
+    origin: tuple[float, float, float] = (0, 0, 0),
+    rotation: Rotation | None = None,
+) -> np.ndarray:
+    """Transform input spherical coordinates to pixel coordinates wrt a coeval box.
+
+    Parameters
+    ----------
+    coeval_res
+        The resolution of the coeval box.
+    comoving_radius
+        The radius of the spherical coordinates (in comoving units).
+    latitude
+        An array of latitude coordinates onto which to tile the box. In radians from
+        -pi/2 to pi/2
+    longitude
+        An array, same size as latitude, of longitude coordinates onto which to tile the
+        box. In radians from 0 to 2pi.
+    origin
+        Define the location of the centre of the spherical shell, assuming that the
+        (0,0,0) pixel of the coeval box is at (0,0,0) in cartesian coordinates.
+    rotation
+        The rotation by which to rotate the spherical coordinates before interpolation.
+        This is done before shifting the origin, and is equivalent to rotating the
+        coeval box beforing tiling it.
+    """
+    if coeval_res <= 0:
+        raise ValueError("coeval_res must be positive")
+
+    if latitude.shape != longitude.shape:
+        raise ValueError("latitude and longitude must have the same shape")
+
+    if latitude.ndim != 1:
+        raise ValueError("latitude and longitude must be 1D arrays")
+
+    if np.any(np.abs(latitude) > np.pi / 2):
+        raise ValueError("latitude must be between -pi/2 and pi/2")
+
+    if np.any((longitude < 0) | (longitude > 2 * np.pi)):
+        raise ValueError("longitude must be between 0 and 2pi")
+
     # Get the cartesian coordinates (x, y, z) of the angular lightcone coords.
     phi = np.pi / 2 - latitude
     sinphi = np.sin(phi)
-    cart_coords = np.array(
+    cart_coords = comoving_radius * np.array(
         [
-            dc * sinphi * np.cos(longitude),
-            dc * sinphi * np.sin(longitude),
-            dc * np.cos(phi),
+            sinphi * np.cos(longitude),
+            sinphi * np.sin(longitude),
+            np.cos(phi),
         ]
     )
 
@@ -109,15 +166,7 @@ def make_lightcone_slice(
 
     # Divide by the resolution so now the coordinates are in units of pixel number.
     cart_coords /= coeval_res
-
-    # Do the interpolation
-    return map_coordinates(
-        coeval,
-        cart_coords,
-        order=int(interpolation_order),
-        mode="grid-wrap",  # this wraps each dimension.
-        prefilter=False,
-    )
+    return cart_coords
 
 
 def make_healpix_lightcone_slice(
