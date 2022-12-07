@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from typing import Literal
 
 import numpy as np
@@ -24,7 +25,7 @@ def make_lightcone_slice(
     interpolation_order: int = 1,
     origin: tuple[float, float, float] = (0, 0, 0),
     rotation: Rotation | None = None,
-):
+) -> np.ndarray:
     """
     Create a lightcone slice in angular coordinates from two coeval simulations.
 
@@ -170,8 +171,8 @@ def transform_to_pixel_coords(
 
 
 def make_healpix_lightcone_slice(
-    nside: int, order: Literal["ring", "nested"] = "ring", **kwargs
-):
+    nside: int, order: Literal["ring", "nested"] = "ring", **kwargs: Any
+) -> np.ndarray:
     """
     Create a healpix lightcone slice in angular coordinates.
 
