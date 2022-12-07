@@ -1,4 +1,6 @@
 """Basic tests of cosmotile algorithm."""
+from __future__ import annotations
+
 from typing import Any
 
 import numpy as np
@@ -21,7 +23,7 @@ def test_make_lightcone_slice_inputs() -> None:
         redshift: float | None = 10.0,
         latitude: np.ndarray = lat,
         longitude: np.ndarray = lon,
-        **kw: Any
+        **kw: Any,
     ) -> None:
 
         make_lightcone_slice(
@@ -30,7 +32,7 @@ def test_make_lightcone_slice_inputs() -> None:
             redshift=redshift,
             latitude=latitude,
             longitude=longitude,
-            **kw
+            **kw,
         )
 
     with pytest.raises(ValueError, match="coeval must have three dimensions"):
