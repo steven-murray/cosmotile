@@ -74,6 +74,20 @@ def test_make_lightcone_slice_inputs() -> None:
     ):
         call(interpolation_order=1000)
 
+    with pytest.raises(
+        ValueError, match="if any of rsd_displacement is provided, all must be"
+    ):
+        call(rsd_displacement_x=coeval)
+
+    with pytest.raises(
+        ValueError, match="rsd_displacements must be same shape as coeval"
+    ):
+        call(
+            rsd_displacement_x=coeval[:-1],
+            rsd_displacement_y=coeval[:-1],
+            rsd_displacement_z=coeval[:-1],
+        )
+
 
 @pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi, None])
 @pytest.mark.parametrize("redshift", [1.0])
@@ -85,16 +99,25 @@ def test_make_lightcone_slice_inputs() -> None:
         None,
     ],
 )
+@pytest.mark.parametrize("rsd", [None, 1])
 def test_uniform_box(
     distance_to_shell: float,
     origin: tuple[float, float, float],
     rotation: R | None,
     redshift: float,
+    rsd: float | None,
 ) -> None:
     """Test that a uniform box gives uniform interpolated values."""
     coeval = np.ones((10, 10, 10))
     lat = np.random.uniform(size=11) * np.pi - np.pi / 2
     lon = np.random.uniform(size=11) * 2 * np.pi
+
+    if rsd is not None:
+        rsdx = np.ones_like(coeval) * rsd
+        rsdy = np.ones_like(coeval) * rsd
+        rsdz = np.ones_like(coeval) * rsd
+    else:
+        rsdx, rsdy, rsdz = None, None, None
 
     shell = make_lightcone_slice(
         coeval=coeval,
@@ -105,6 +128,9 @@ def test_uniform_box(
         rotation=rotation,
         latitude=lat,
         longitude=lon,
+        rsd_displacement_x=rsdx,
+        rsd_displacement_y=rsdy,
+        rsd_displacement_z=rsdz,
     )
     assert np.allclose(shell, 1, rtol=1e-8)
 
@@ -119,16 +145,25 @@ def test_uniform_box(
         None,
     ],
 )
+@pytest.mark.parametrize("rsd", [None, 1])
 def test_random_uniform_box(
     distance_to_shell: float,
     origin: tuple[float, float, float],
     rotation: R | None,
     redshift: float,
+    rsd: float | None,
 ) -> None:
     """Test that a random uniform box doesn't yield answers bigger than the maximum."""
     coeval = np.random.uniform(size=(12, 13, 14))
     lat = np.random.uniform(size=11) * np.pi - np.pi / 2
     lon = np.random.uniform(size=11) * 2 * np.pi
+
+    if rsd is not None:
+        rsdx = np.ones_like(coeval) * rsd
+        rsdy = np.ones_like(coeval) * rsd
+        rsdz = np.ones_like(coeval) * rsd
+    else:
+        rsdx, rsdy, rsdz = None, None, None
 
     shell = make_lightcone_slice(
         coeval=coeval,
@@ -139,12 +174,19 @@ def test_random_uniform_box(
         rotation=rotation,
         latitude=lat,
         longitude=lon,
+        rsd_displacement_x=rsdx,
+        rsd_displacement_y=rsdy,
+        rsd_displacement_z=rsdz,
     )
     assert np.all(shell <= 1)
 
 
 @pytest.mark.parametrize("distance_to_shell", [5, 15])
-def test_stripe(distance_to_shell: float) -> None:
+@pytest.mark.parametrize("rsd", [None, 0, 10])
+def test_stripe(
+    distance_to_shell: float,
+    rsd: float | None,
+) -> None:
     """Test a box with a single non-zero plane."""
     coeval = np.zeros((10, 10, 10))
     coeval[5] = 1.0  # a plane at x=5
@@ -152,13 +194,24 @@ def test_stripe(distance_to_shell: float) -> None:
     lat = np.array([0, 0, 0, 0, np.pi / 2, -np.pi / 2])  # points on cartesian axes
     lon = np.array([0, np.pi / 2, np.pi, 3 * np.pi / 2, 0, 0])
 
+    if rsd is not None:
+        rsdx = np.ones_like(coeval) * rsd
+        rsdy = np.zeros_like(coeval)
+        rsdz = np.zeros_like(coeval)
+    else:
+        rsdx, rsdy, rsdz = None, None, None
+
     shell = make_lightcone_slice(
         coeval=coeval,
         coeval_res=1.0,
         distance_to_shell=distance_to_shell,
         latitude=lat,
         longitude=lon,
+        rsd_displacement_x=rsdx,
+        rsd_displacement_y=rsdy,
+        rsd_displacement_z=rsdz,
     )
+
     print(shell)
     assert np.isclose(shell[0], 1.0)
     assert shell[1] == 0
