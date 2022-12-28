@@ -16,7 +16,7 @@ classifiers = [
 Changelog = "https://github.com/steven-murray/cosmotile/releases"
 
 [tool.poetry.dependencies]
-python = ">=3.8"
+python = ">=3.8,<4.0"
 click = ">=8.0.1"
 numpy = "^1.23.4"
 scipy = "^1.9.3"
