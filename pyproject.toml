@@ -16,12 +16,20 @@ classifiers = [
 Changelog = "https://github.com/steven-murray/cosmotile/releases"
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = ">=3.8,<4.0"
 click = ">=8.0.1"
-numpy = "^1.23.4"
-scipy = "^1.9.3"
-astropy = "^5.1.1"
-astropy-healpix = "^0.7"
+numpy = ">=1.23.4"
+scipy = ">=1.9.3"
+astropy = ">=5.1.1"
+astropy-healpix = ">=0.7"
+
+# A list of all of the optional dependencies, some of which are included in the
+# below `extras`. They can be opted into by apps.
+numba = { version = ">=0.56.4", optional = true }
+
+[tool.poetry.extras]
+perf = ["numba"]
+all = ["numba"]
 
 [tool.poetry.dev-dependencies]
 Pygments = ">=2.10.0"

@@ -12,6 +12,8 @@ from astropy_healpix import HEALPix
 from scipy.ndimage import map_coordinates
 from scipy.spatial.transform import Rotation
 
+from .cic import cloud_in_cell
+
 
 def make_lightcone_slice(
     *,
@@ -19,6 +21,9 @@ def make_lightcone_slice(
     coeval_res: float,
     latitude: np.ndarray,
     longitude: np.ndarray,
+    rsd_displacement_x: np.ndarray | None = None,
+    rsd_displacement_y: np.ndarray | None = None,
+    rsd_displacement_z: np.ndarray | None = None,
     redshift: float | None = None,
     distance_to_shell: float | None = None,
     cosmo: FLRW = Planck18,
@@ -38,14 +43,17 @@ def make_lightcone_slice(
         Must have three dimensions (not necessarily the same size).
     coeval_res
         The resolution of the coeval box in each of its 3 dimensions.
-    redshift
-        The redshift of the coeval box.
     latitude
         An array of latitude coordinates onto which to tile the box. In radians from
         -pi/2 to pi/2
     longitude
         An array, same size as latitude, of longitude coordinates onto which to tile the
         box. In radians from 0 to 2pi.
+    rsd_displacement_x, rsd_displacement_y, rsd_displacement_z
+        Optional arrays of displacements due to local velocities, each the same
+        shape as ``coeval``. Either none or all must be provided.
+    redshift
+        The redshift of the coeval box.
     cosmo
         The cosmology.
     interpolation_order
@@ -75,6 +83,26 @@ def make_lightcone_slice(
 
     if interpolation_order < 0 or interpolation_order > 5:
         raise ValueError("interpolation_order must be in the range 0-5")
+
+    if rsd_displacement_x is not None:
+        if rsd_displacement_y is None or rsd_displacement_z is None:
+            raise ValueError("if any of rsd_displacement is provided, all must be")
+        if (
+            not rsd_displacement_x.shape
+            == rsd_displacement_y.shape
+            == rsd_displacement_z.shape
+            == coeval.shape
+        ):
+            raise ValueError("rsd_displacements must be same shape as coeval")
+
+    if (
+        rsd_displacement_x is not None
+        and rsd_displacement_y is not None
+        and rsd_displacement_z is not None
+    ):
+        coeval = cloud_in_cell(
+            coeval, rsd_displacement_x, rsd_displacement_y, rsd_displacement_z
+        )
 
     # Determine the radial comoving distance r to the comoving shell at the
     # frequency of interest.
