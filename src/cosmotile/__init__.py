@@ -95,7 +95,11 @@ def make_lightcone_slice(
         ):
             raise ValueError("rsd_displacements must be same shape as coeval")
 
-    if rsd_displacement_x is not None:
+    if (
+        rsd_displacement_x is not None
+        and rsd_displacement_y is not None
+        and rsd_displacement_z is not None
+    ):
         coeval = cloud_in_cell(
             coeval, rsd_displacement_x, rsd_displacement_y, rsd_displacement_z
         )

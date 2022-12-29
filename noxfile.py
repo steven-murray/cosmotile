@@ -142,7 +142,7 @@ def tests(session: Session) -> None:
             session.notify("coverage", posargs=[])
 
 
-@session(python=python_versions)
+@session(python=python_versions, name="tests-nojit")
 def tests_nojit(session: Session) -> None:
     """Run the test suite."""
     session.install(".")
