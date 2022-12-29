@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
-from numba import njit
 
 
-@njit  # type: ignore
+try:
+    from numba import njit
+
+    NUMBA = True
+except ImportError:
+    NUMBA = False
+
+
 def cloud_in_cell(
     field: np.ndarray, dx: np.ndarray, dy: np.ndarray, dz: np.ndarray
 ) -> np.ndarray:
@@ -24,6 +32,9 @@ def cloud_in_cell(
         Displacement of each coordinate in the field in the x,y, and z direction.
         The displacement must be in units of the cell size.
     """
+    if not NUMBA:
+        warnings.warn("Install numba for a speedup of cloud_in_cell")
+
     if not field.shape == dx.shape == dy.shape == dz.shape:
         raise ValueError("Field and displacement must have the same shape.")
 
@@ -109,3 +120,8 @@ def cloud_in_cell(
                 out[ip, jp, kp] += ddx * ddy * ddz * weight
 
     return out
+
+
+if NUMBA:
+    cloud_in_cell_nojit = cloud_in_cell
+    cloud_in_cell = njit(cloud_in_cell)
