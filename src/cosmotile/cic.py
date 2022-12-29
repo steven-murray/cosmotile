@@ -6,8 +6,10 @@ import numpy as np
 from numba import njit
 
 
-@njit
-def cloud_in_cell(field: np.ndarray, dx: np.ndarray, dy: np.ndarray, dz: np.ndarray):
+@njit  # type: ignore
+def cloud_in_cell(
+    field: np.ndarray, dx: np.ndarray, dy: np.ndarray, dz: np.ndarray
+) -> np.ndarray:
     """
     Interpolates a point in 3D space.
 
@@ -106,6 +108,4 @@ def cloud_in_cell(field: np.ndarray, dx: np.ndarray, dy: np.ndarray, dz: np.ndar
                 out[i, jp, kp] += tx * ddy * ddz * weight
                 out[ip, jp, kp] += ddx * ddy * ddz * weight
 
-                if ii == jj == kk == 0:
-                    print(i, j, k, tx, ty, tz, ddx, ddy, ddz)
     return out

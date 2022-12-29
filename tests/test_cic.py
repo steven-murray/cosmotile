@@ -4,7 +4,7 @@ import numpy as np
 from cosmotile.cic import cloud_in_cell
 
 
-def test_cic_dx():
+def test_cic_dx() -> None:
     """Test the cloud-in-cell function."""
     x = np.zeros((10, 10, 10))
     x[::2] = 1
@@ -23,7 +23,7 @@ def test_cic_dx():
     assert np.allclose(out[1::2], 1.0)
 
 
-def test_cic_dy():
+def test_cic_dy() -> None:
     """Test the cloud-in-cell function."""
     x = np.zeros((10, 10, 10))
     x[:, ::2] = 1
@@ -39,7 +39,7 @@ def test_cic_dy():
     assert np.allclose(out[:, 1::2], 1.0)
 
 
-def test_cic_dz():
+def test_cic_dz() -> None:
     """Test the cloud-in-cell function."""
     x = np.zeros((10, 10, 10))
     x[:, :, ::2] = 1
