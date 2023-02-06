@@ -25,7 +25,6 @@ def test_make_lightcone_slice_inputs() -> None:
         longitude: np.ndarray = lon,
         **kw: Any,
     ) -> None:
-
         make_lightcone_slice(
             coeval=coeval,
             coeval_res=coeval_res,
