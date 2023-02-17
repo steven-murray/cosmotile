@@ -16,11 +16,13 @@ def test_cic_dx() -> None:
 
     out = cloud_in_cell(x, dx, dy, dz)
 
-    print(np.any(out > 0.0))
     assert np.allclose(out[1::2], 1.0)
 
     out = cloud_in_cell(x, -dx, dy, dz)
     assert np.allclose(out[1::2], 1.0)
+
+    out = cloud_in_cell(x, -1.5 * dx, dy, dz)
+    assert np.allclose(out, 0.5)
 
 
 def test_cic_dy() -> None:
@@ -37,6 +39,8 @@ def test_cic_dy() -> None:
     assert np.allclose(out[:, 1::2], 1.0)
     out = cloud_in_cell(x, dx, -dy, dz)
     assert np.allclose(out[:, 1::2], 1.0)
+    out = cloud_in_cell(x, dx, -1.5 * dy, dz)
+    assert np.allclose(out, 0.5)
 
 
 def test_cic_dz() -> None:
@@ -53,3 +57,5 @@ def test_cic_dz() -> None:
     assert np.allclose(out[:, :, 1::2], 1.0)
     out = cloud_in_cell(x, dx, dy, -dz)
     assert np.allclose(out[:, :, 1::2], 1.0)
+    out = cloud_in_cell(x, dx, dy, -1.5 * dz)
+    assert np.allclose(out, 0.5)

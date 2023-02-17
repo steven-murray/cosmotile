@@ -30,9 +30,11 @@ def cloud_in_cell(
         The original field before displacement.
     dx, dy, dz
         Displacement of each coordinate in the field in the x,y, and z direction.
-        The displacement must be in units of the cell size.
+        The displacement must be in units of the cell size. Displacements can represent,
+        for example, redshift-space distortions (RSDs) or peculiar velocities. If
+        velocities are in km / s, then input displacement as v / H(z) / cell_size.
     """
-    if not NUMBA:
+    if not NUMBA:  # pragma: no cover
         warnings.warn("Install numba for a speedup of cloud_in_cell")
 
     if not field.shape == dx.shape == dy.shape == dz.shape:
@@ -51,63 +53,26 @@ def cloud_in_cell(
                 ddy = dy[ii, jj, kk]
                 ddz = dz[ii, jj, kk]
 
-                # Get the cell into which the cell was shifted.
-                # modulo the number of cells so we wrap around.
-                # Note that i,j,k is the coordinates of the centre of the cell
-                # just *below* the offset position. So the cloud only hits
-                # this cell and cells *above* it, not below.
-                i = int(ii + ddx) % nx
-                j = int(jj + ddy) % ny
-                k = int(kk + ddz) % nz
+                # adding a value of nx pre-mod ensures we are still within the range [0, nx]
+                x = (ii + ddx + nx) % nx
+                y = (jj + ddy + ny) % ny
+                z = (kk + ddz + nz) % nz
+
+                i = int(x)
+                j = int(y)
+                k = int(z)
 
                 ip = (i + 1) % nx
                 jp = (j + 1) % ny
                 kp = (k + 1) % nz
 
-                # Get the offset of the cell within the parent cell, assuming
-                # a resolution of unity. If the offset is negative, then ddx is defined
-                # as the positive distance between the cell before it and the shifted
-                # point (distance between each point is unity).
-                #   o            o            o            o            o
-                #   |      <-------ddx--------x
-                #   i      <-----| = ddx % 1
-                #   <-ddx-><-tx->
-                #
-                # In the positive ddx case:
-                #                                          i
-                #                                          |
-                #   o            o            o            o            o
-                #                             x-------ddx------->
-                #                                ddx % 1 = |---->
-                #                                          <-ddx-><-tx->
-                # We have to put a clause in to check when a negative ddx takes you
-                # to exactly a node, because then we get the mod wrong.
-                if ddx < 0:
-                    tx = ddx % 1
-                    if tx == 0:
-                        tx = 1
-                    ddx = 1 - tx
-                else:
-                    ddx %= 1
-                    tx = 1 - ddx
+                tx = (i + 1) - x
+                ty = (j + 1) - y
+                tz = (k + 1) - z
 
-                if ddy < 0:
-                    ty = ddy % 1
-                    if ty == 0:
-                        ty = 1
-                    ddy = 1 - ty
-                else:
-                    ddy %= 1
-                    ty = 1 - ddy
-
-                if ddz < 0:
-                    tz = ddz % 1
-                    if tz == 0:
-                        tz = 1
-                    ddz = 1 - tz
-                else:
-                    ddz %= 1
-                    tz = 1 - ddz
+                ddx = 1 - tx
+                ddy = 1 - ty
+                ddz = 1 - tz
 
                 # Do the trilinear interpolation to surrounding 8 cells
                 out[i, j, k] += tx * ty * tz * weight
