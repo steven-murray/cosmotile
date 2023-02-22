@@ -1,7 +1,21 @@
 """Tests of the cloud-in-cell function."""
 import numpy as np
+import pytest
 
 from cosmotile.cic import cloud_in_cell
+
+
+def test_cic_bad_input():
+    """Test that different-shaped inputs to CIC raise appropriate error."""
+    fld = np.zeros((10, 10, 10))
+    dx = np.zeros_like(fld)
+    dy = np.zeros_like(fld)
+    dz = np.zeros_like(fld)
+
+    with pytest.raises(
+        ValueError, match="Field and displacement must have the same shape."
+    ):
+        cloud_in_cell(fld, dx, dy, dz[1:])
 
 
 def test_cic_dx() -> None:
