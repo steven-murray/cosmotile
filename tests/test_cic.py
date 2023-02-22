@@ -5,7 +5,7 @@ import pytest
 from cosmotile.cic import cloud_in_cell
 
 
-def test_cic_bad_input():
+def test_cic_bad_input() -> None:
     """Test that different-shaped inputs to CIC raise appropriate error."""
     fld = np.zeros((10, 10, 10))
     dx = np.zeros_like(fld)
