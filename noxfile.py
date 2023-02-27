@@ -23,7 +23,7 @@ except ImportError:
 
 
 package = "cosmotile"
-python_versions = ["3.11", "3.10", "3.9", "3.8"]
+python_versions = ["3.10", "3.9", "3.8"]
 nox.needs_version = ">= 2021.6.6"
 nox.options.sessions = (
     "safety",
@@ -31,6 +31,7 @@ nox.options.sessions = (
     "tests",
     "xdoctest",
     "docs-build",
+    "tests-nojit",
 )
 
 
@@ -110,34 +111,6 @@ def activate_virtualenv_in_precommit_hooks(session: Session) -> None:
                 break
 
 
-# @session(name="pre-commit", python=python_versions[0])
-# def precommit(session: Session) -> None:
-#     """Lint using pre-commit."""
-#     args = session.posargs or [
-#         "run",
-#         "--all-files",
-#         "--hook-stage=manual",
-#         "--show-diff-on-failure",
-#     ]
-#     session.install(
-#         "black",
-#         "darglint",
-#         "flake8",
-#         "flake8-bandit",
-#         "flake8-bugbear",
-#         "flake8-docstrings",
-#         "flake8-rst-docstrings",
-#         "isort",
-#         "pep8-naming",
-#         "pre-commit",
-#         "pre-commit-hooks",
-#         "pyupgrade",
-#     )
-#     session.run("pre-commit", *args)
-#     if args and args[0] == "install":
-#         activate_virtualenv_in_precommit_hooks(session)
-
-
 @session(python=python_versions[0])
 def safety(session: Session) -> None:
     """Scan dependencies for insecure packages."""
@@ -160,10 +133,24 @@ def mypy(session: Session) -> None:
 @session(python=python_versions)
 def tests(session: Session) -> None:
     """Run the test suite."""
-    session.install(".")
+    session.install(".[all]")
     session.install("coverage[toml]", "pytest", "pygments")
     try:
         session.run("coverage", "run", "--parallel", "-m", "pytest", *session.posargs)
+    finally:
+        if session.interactive:
+            session.notify("coverage", posargs=[])
+
+
+@session(python=python_versions, name="tests-nojit")
+def tests_nojit(session: Session) -> None:
+    """Run the test suite."""
+    session.install(".")
+    session.install("coverage[toml]", "pytest", "pygments")
+    try:
+        session.run(
+            "coverage", "run", "--parallel", "-m", "pytest", "-s", *session.posargs
+        )
     finally:
         if session.interactive:
             session.notify("coverage", posargs=[])
