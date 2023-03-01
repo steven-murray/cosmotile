@@ -35,7 +35,7 @@ def cloud_in_cell(
         velocities are in km / s, then input displacement as v / H(z) / cell_size.
     """
     if not NUMBA:  # pragma: no cover
-        warnings.warn("Install numba for a speedup of cloud_in_cell")
+        warnings.warn("Install numba for a speedup of cloud_in_cell", stacklevel=2)
 
     if not field.shape == dx.shape == dy.shape == dz.shape:
         raise ValueError("Field and displacement must have the same shape.")
