@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from functools import partial
 from typing import Any
+from typing import Callable
+from typing import Iterable
 from typing import Literal
 
 import numpy as np
@@ -18,15 +20,11 @@ from scipy.spatial.transform import Rotation
 from .cic import cloud_in_cell_los
 
 
-def make_lightcone_slice(
+def make_lightcone_slice_interpolator(
     *,
-    coeval: np.ndarray,
     coeval_res: float,
     latitude: np.ndarray,
     longitude: np.ndarray,
-    rsd_displacement_x: np.ndarray | None = None,
-    rsd_displacement_y: np.ndarray | None = None,
-    rsd_displacement_z: np.ndarray | None = None,
     redshift: float | None = None,
     distance_to_shell: float | None = None,
     cosmo: FLRW = Planck18,
@@ -35,15 +33,10 @@ def make_lightcone_slice(
     rotation: Rotation | None = None,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
-    Create a lightcone slice in angular coordinates from two coeval simulations.
-
-    Interpolates the input coeval box to angular coordinates.
+    Create a callable interpolator for a lightcone slice.
 
     Parameters
     ----------
-    coeval
-        The rectangular coeval simulation to interpolate to the angular coordinates.
-        Must have three dimensions (not necessarily the same size).
     coeval_res
         The resolution of the coeval box in each of its 3 dimensions.
     latitude
@@ -52,9 +45,6 @@ def make_lightcone_slice(
     longitude
         An array, same size as latitude, of longitude coordinates onto which to tile the
         box. In radians from 0 to 2pi.
-    rsd_displacement_x, rsd_displacement_y, rsd_displacement_z
-        Optional arrays of displacements due to local velocities, each the same
-        shape as ``coeval``. Either none or all must be provided.
     redshift
         The redshift of the coeval box.
     cosmo
@@ -71,15 +61,10 @@ def make_lightcone_slice(
 
     Returns
     -------
-    field
-        The interpolated field on the angular coordinates.
-    rsd_los
-        The line-of-sight component of the RSD displacement, if ``rsd_displacement_x``,
-        ``rsd_displacement_y``, and ``rsd_displacement_z`` are provided.
+    interpolator
+        A callable that takes a 3D array of coeval values and returns a 2D array of
+        interpolated values on a redshift slice.
     """
-    if coeval.ndim != 3:
-        raise ValueError("coeval must have three dimensions")
-
     if not isinstance(cosmo, FLRW):
         raise ValueError("cosmo must be an astropy FLRW object")
 
@@ -95,16 +80,8 @@ def make_lightcone_slice(
     if interpolation_order < 0 or interpolation_order > 5:
         raise ValueError("interpolation_order must be in the range 0-5")
 
-    if rsd_displacement_x is not None:
-        if rsd_displacement_y is None or rsd_displacement_z is None:
-            raise ValueError("if any of rsd_displacement is provided, all must be")
-        if (
-            not rsd_displacement_x.shape
-            == rsd_displacement_y.shape
-            == rsd_displacement_z.shape
-            == coeval.shape
-        ):
-            raise ValueError("rsd_displacements must be same shape as coeval")
+    if not isinstance(interpolation_order, int):
+        raise TypeError("interpolation_order must be an integer")
 
     # Determine the radial comoving distance r to the comoving shell at the
     # frequency of interest.
@@ -124,26 +101,117 @@ def make_lightcone_slice(
     coordmap = partial(
         map_coordinates,
         coordinates=pixel_coords,
-        order=int(interpolation_order),
+        order=interpolation_order,
         mode="grid-wrap",  # this wraps each dimension.
         prefilter=False,
     )
 
-    # Do the interpolation
-    field = coordmap(coeval)
+    coordmap.__name__ = "lightcone_slice_interpolator"
+    coordmap.__doc__ = """Interpolate a coeval box to a lightcone slice at a given redshift.
 
-    if rsd_displacement_x is None:
-        return field
+This function is a wrapper around :func:`scipy.ndimage.map_coordinates` created by
+functools.partial.
 
-    rsdx = coordmap(rsd_displacement_x)
-    rsdy = coordmap(rsd_displacement_y)
-    rsdz = coordmap(rsd_displacement_z)
+Parameters
+----------
+coeval
+    A 3D array of float coeval values to be interpolated to the lightcone slice.
 
-    # Now take the dot product of rsds with (negative) pixel coordinates to get
-    # the LoS comp.
-    rsd_los = np.sum(np.array([rsdx, rsdy, rsdz]) * -pixel_coords, axis=0)
-    rsd_los /= np.sqrt(np.sum(np.square(pixel_coords), axis=0))
-    return field, rsd_los
+Returns
+-------
+lightcone_slice
+    A 2D array of float interpolated values on the lightcone slice.
+"""
+
+
+def make_lightcone_slice(
+    *, coevals: Iterable[np.ndarray], **kwargs
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """
+    Create a lightcone slice in angular coordinates from two coeval simulations.
+
+    Interpolates the input coeval box to angular coordinates.
+
+    Parameters
+    ----------
+    coevals
+        An iterable of rectangular coeval simulations to interpolate to the angular
+        coordinates. Must have three dimensions (not necessarily the same size). Each
+        box must have the same shape, and all are assumed to be at the same coordinates.
+        Each coeval box can be a different simulated field.
+
+    Other Parameters
+    ----------------
+    All other parameters are passed to :func:`make_lightcone_slice_interpolator`.
+
+    Yields
+    ------
+    field
+        Each interpolated field on the angular coordinates.
+    """
+    if hasattr(coevals, "ndim") and coevals.ndim == 3:
+        coevals = [coevals]
+
+    if any(cv.ndim != 3 for cv in coevals):
+        raise ValueError("all coevals must have three dimensions")
+
+    if any(cv.shape != coevals[0].shape for cv in coevals):
+        raise ValueError("all coevals must have the same shape")
+
+    coordmap = make_lightcone_slice_interpolator(**kwargs)
+
+    for cv in coevals:
+        yield coordmap(cv)
+
+
+def make_lightcone_slice_vector_field(
+    coeval_vector_fields: Iterable[Iterable[np.ndarray, np.ndarray, np.ndarray]],
+    interpolator: Callable[[np.ndarray], np.ndarray],
+):
+    """
+    Interpolate a 3D vector field to a lightcone slice as a line-of-sight component.
+
+    This takes a sequence of 3D vector fields, eg. the velocity field, and interpolates
+    each component to the lightcone slice. It then computes the line-of-sight component
+    of each interpolated vector field, where positive values are oriented towards the
+    observer.
+
+    Parameters
+    ----------
+    coeval_vector_fields
+        An iterable of 3D vector fields to interpolate to the lightcone slice. Each
+        vector field must be an iterable of 3 3D arrays, each of the same shape.
+    interpolator
+        A callable that takes a 3D array of coeval values and returns a 2D array of
+        interpolated values on a redshift slice. This should be created by
+        :func:`make_lightcone_slice_interpolator` using the properties of the
+        coeval vector fields.
+
+    Yields
+    ------
+    los_component
+        The line-of-sight component of each interpolated vector field.
+    """
+    pixel_coords = interpolator.keywords["coordinates"]
+    coord_norm = np.sqrt(np.sum(np.square(pixel_coords), axis=0))
+    for i, cvf in enumerate(coeval_vector_fields):
+        if len(cvf) != 3:
+            raise ValueError(
+                "coeval_vector_fields must be an iterable of 3-tuples. Got length "
+                f"{len(cvf)} at index {i}"
+            )
+        if any(c.shape != cvf[0].shape for c in cvf):
+            raise ValueError(
+                f"all coeval vector fields must have the same shape. For index {i}, "
+                f"got shapes {[c.shape for c in cvf]}"
+            )
+
+        cvf = np.array([interpolator(c) for c in cvf])
+
+        # Now take the dot product of the vector field with (negative) pixel coordinates to get
+        # the LoS comp.
+        cvf *= -pixel_coords
+        yield np.sum(cvf, axis=0) / coord_norm
 
 
 def transform_to_pixel_coords(
