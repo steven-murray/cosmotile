@@ -15,7 +15,7 @@ except ImportError:
     NUMBA = False
 
 
-def cloud_in_cell(
+def cloud_in_cell_coeval(
     field: np.ndarray, dx: np.ndarray, dy: np.ndarray, dz: np.ndarray
 ) -> np.ndarray:
     """
@@ -87,6 +87,68 @@ def cloud_in_cell(
     return out
 
 
+def cloud_in_cell_los(
+    field: np.ndarray,
+    delta_los: np.ndarray,
+) -> np.ndarray:
+    """
+    Interpolate in the line-of-sight direction using cloud-in-cell algorithm.
+
+    Note that the implementation was derived largely from
+    https://astro.uchicago.edu/~andrey/Talks/PM/pm.pdf, specially slide 13.
+
+    Notes
+    -----
+    The ``field`` here is assumed to be regularly spaced in comoving distance along the
+    line-of-sight (the angular coordinates can be arbitrarily arranged). For each angular
+    point, we first displace the regular grid along the line-of-sight by ``delta_los``,
+    to create a a new, non-regular grid (which we can consider to be "particles"). We
+    then use the regular cloud-in-cell interpolation to interpolate the particles back
+    on to the regular grid.
+
+    Parameters
+    ----------
+    field
+        The regularly-spaced (along LoS) field before displacement by delta_los.
+        Shape ``(nlos_slices, nangles)``.
+    delta_los
+        Displacement of each coordinate in the field along the LoS.
+        The displacement must be in units of the regular grid size, i.e.
+        ``v / H(z) / grid_resolution``. Same shape as ``field``.
+    """
+    if not NUMBA:  # pragma: no cover
+        warnings.warn("Install numba for a speedup of cloud_in_cell", stacklevel=2)
+
+    if field.shape != delta_los.shape:
+        raise ValueError("Field and displacement must have the same shape.")
+
+    out = np.zeros_like(field)
+
+    nslice, nangles = delta_los.shape
+    for ii in range(nslice):
+        weight = field[ii]
+
+        # Get the offset of this grid cell
+        ddx = delta_los[ii]
+        x = ii + ddx
+
+        i = int(x)
+        ip = i + 1
+
+        tx = ip - x
+        ddx = 1 - tx
+
+        # Do the trilinear interpolation to surrounding 8 cells
+        if 0 < i < nslice:
+            out[i] += tx * weight
+        if 0 < ip < nslice:
+            out[ip] += ddx * weight
+
+    return out
+
+
 if NUMBA:
-    cloud_in_cell_nojit = cloud_in_cell
-    cloud_in_cell = njit(cloud_in_cell)
+    cloud_in_cell_coeval_nojit = cloud_in_cell_coeval
+    cloud_in_cell_coeval = njit(cloud_in_cell_coeval)
+    cloud_in_cell_los_nojit = cloud_in_cell_los
+    cloud_in_cell_los = njit(cloud_in_cell_los)
