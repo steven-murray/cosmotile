@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 from typing import Literal
 
@@ -9,10 +10,12 @@ import numpy as np
 from astropy.cosmology import FLRW
 from astropy.cosmology import Planck18
 from astropy_healpix import HEALPix
+from scipy.interpolate import RectBivariateSpline
+from scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import map_coordinates
 from scipy.spatial.transform import Rotation
 
-from .cic import cloud_in_cell
+from .cic import cloud_in_cell_los
 
 
 def make_lightcone_slice(
@@ -30,7 +33,7 @@ def make_lightcone_slice(
     interpolation_order: int = 1,
     origin: tuple[float, float, float] = (0, 0, 0),
     rotation: Rotation | None = None,
-) -> np.ndarray:
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """
     Create a lightcone slice in angular coordinates from two coeval simulations.
 
@@ -65,6 +68,14 @@ def make_lightcone_slice(
         The rotation by which to rotate the spherical coordinates before interpolation.
         This is done before shifting the origin, and is equivalent to rotating the
         coeval box beforing tiling it.
+
+    Returns
+    -------
+    field
+        The interpolated field on the angular coordinates.
+    rsd_los
+        The line-of-sight component of the RSD displacement, if ``rsd_displacement_x``,
+        ``rsd_displacement_y``, and ``rsd_displacement_z`` are provided.
     """
     if coeval.ndim != 3:
         raise ValueError("coeval must have three dimensions")
@@ -95,15 +106,6 @@ def make_lightcone_slice(
         ):
             raise ValueError("rsd_displacements must be same shape as coeval")
 
-    if (
-        rsd_displacement_x is not None
-        and rsd_displacement_y is not None
-        and rsd_displacement_z is not None
-    ):
-        coeval = cloud_in_cell(
-            coeval, rsd_displacement_x, rsd_displacement_y, rsd_displacement_z
-        )
-
     # Determine the radial comoving distance r to the comoving shell at the
     # frequency of interest.
     dc = distance_to_shell
@@ -119,14 +121,29 @@ def make_lightcone_slice(
         rotation=rotation,
     )
 
-    # Do the interpolation
-    return map_coordinates(
-        coeval,
-        pixel_coords,
+    coordmap = partial(
+        map_coordinates,
+        coordinates=pixel_coords,
         order=int(interpolation_order),
         mode="grid-wrap",  # this wraps each dimension.
         prefilter=False,
     )
+
+    # Do the interpolation
+    field = coordmap(coeval)
+
+    if rsd_displacement_x is None:
+        return field
+
+    rsdx = coordmap(rsd_displacement_x)
+    rsdy = coordmap(rsd_displacement_y)
+    rsdz = coordmap(rsd_displacement_z)
+
+    # Now take the dot product of rsds with (negative) pixel coordinates to get
+    # the LoS comp.
+    rsd_los = np.sum(np.array([rsdx, rsdy, rsdz]) * -pixel_coords, axis=0)
+    rsd_los /= np.sqrt(np.sum(np.square(pixel_coords), axis=0))
+    return field, rsd_los
 
 
 def transform_to_pixel_coords(
@@ -223,4 +240,59 @@ def make_healpix_lightcone_slice(
 
     return make_lightcone_slice(
         latitude=lat.to_value("radian"), longitude=lon.to_value("radian"), **kwargs
+    )
+
+
+def apply_rsds(
+    field: np.ndarray,
+    los_displacement: np.ndarray,
+    distance: np.ndarray,
+    n_subcells: int = 4,
+) -> np.ndarray:
+    """Apply redshift-space distortions to a field.
+
+    Notes
+    -----
+    To ensure that we cover all the slices in the field after the velocities have
+    been applied, we extrapolate the densities and velocities on either end by the
+    maximum velocity offset in the field.
+    Then, to ensure we don't pick up cells with zero particles (after displacement),
+    we interpolate the slices onto a finer regular grid (in comoving distance) and
+    then displace the field on that grid, before interpolating back onto the original
+    slices.
+
+    Parameters
+    ----------
+    field
+        The field to apply redshift-space distortions to, shape (nslices, ncoords).
+    los_displacement
+        The line-of-sight "apparent" displacement of the field, in comoving distance
+        units, equal to ``v_los/H(z)``. Positive values are towards the observer, shape
+        ``(nslices, ncoords)``.
+    distance
+        The comoving distance to each slice in the field, in the same units as
+        ``los_displacement``, shape (nslices,).
+    """
+    regular = np.allclose(np.diff(np.diff(distance)), 0.0)
+    interpolator = RegularGridInterpolator if regular else RectBivariateSpline
+
+    # TODO: convert these to distances...
+    vmax_towards_observer = np.max(los_displacement[0])
+    vmax_away_from_observer = np.max(-los_displacement[-1])
+
+    smallest_slice = np.min(np.diff(distance))
+    rsd_dx = smallest_slice / n_subcells
+
+    fine_grid = np.arange(
+        distance - vmax_away_from_observer, distance[-1] + vmax_towards_observer, rsd_dx
+    )
+    ang_coords = np.arange(field.shape[1])
+    fine_field = interpolator(distance, ang_coords, field)(fine_grid, ang_coords)
+    fine_rsd = interpolator(distance, ang_coords, los_displacement / rsd_dx)(
+        fine_grid, ang_coords
+    )
+    fine_field = cloud_in_cell_los(fine_field, fine_rsd)
+
+    return RegularGridInterpolator(fine_grid, ang_coords, fine_field)(
+        distance, ang_coords
     )
