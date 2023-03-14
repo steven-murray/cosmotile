@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from cosmotile.cic import cloud_in_cell
+from cosmotile.cic import cloud_in_cell_coeval as cloud_in_cell
+from cosmotile.cic import cloud_in_cell_los as cic_los
 
 
 def test_cic_bad_input() -> None:
@@ -73,3 +74,14 @@ def test_cic_dz() -> None:
     assert np.allclose(out[:, :, 1::2], 1.0)
     out = cloud_in_cell(x, dx, dy, -1.5 * dz)
     assert np.allclose(out, 0.5)
+
+
+def test_cic_los() -> None:
+    """Test the cloud-in-cell line-of-sight function."""
+    field = np.zeros((10, 20))
+    los = np.zeros((11, 20))
+
+    with pytest.raises(
+        ValueError, match="Field and line-of-sight must have the same shape."
+    ):
+        cic_los(field, los)
