@@ -9,6 +9,7 @@ from typing import Iterable
 from typing import Literal
 
 import numpy as np
+from astropy import units as un
 from astropy.cosmology import FLRW
 from astropy.cosmology import Planck18
 from astropy_healpix import HEALPix
@@ -20,14 +21,39 @@ from scipy.spatial.transform import Rotation
 from .cic import cloud_in_cell_los
 
 
+_LENGTH = "length"
+
+
+def get_distance_to_shell_from_redshift(
+    z: float, cell_size: un.Quantity[_LENGTH], cosmo: FLRW = Planck18
+) -> un.Quantity[un.pixel]:
+    """Get a distance to a shell, in units of cell size, from a given redshift.
+
+    Parameters
+    ----------
+    z
+        The redshift
+    cell_size
+        The resolution of the coeval simulation, in comoving units.
+    cosmo
+        The astropy cosmology.
+
+    Returns
+    -------
+    distance
+        The distance, in units of pixels, to the shell.
+    """
+    return (cosmo.comoving_distance(z) / cell_size).to(
+        un.pixel, un.pixel_scale(cell_size / un.pixel)
+    )
+
+
 def make_lightcone_slice_interpolator(
     *,
-    coeval_res: float,
     latitude: np.ndarray,
     longitude: np.ndarray,
-    redshift: float | None = None,
-    distance_to_shell: float | None = None,
-    cosmo: FLRW = Planck18,
+    distance_to_shell: float,
+    #    cosmo: FLRW = Planck18,
     interpolation_order: int = 1,
     origin: tuple[float, float, float] = (0, 0, 0),
     rotation: Rotation | None = None,
@@ -37,18 +63,15 @@ def make_lightcone_slice_interpolator(
 
     Parameters
     ----------
-    coeval_res
-        The resolution of the coeval box in each of its 3 dimensions.
     latitude
         An array of latitude coordinates onto which to tile the box. In radians from
         -pi/2 to pi/2
     longitude
         An array, same size as latitude, of longitude coordinates onto which to tile the
         box. In radians from 0 to 2pi.
-    redshift
-        The redshift of the coeval box.
-    cosmo
-        The cosmology.
+    distance_to_shell
+        The distance to the spherical shell onto which to interpolate, in units of
+        the cell-size of the coeval box(es) you wish to interpolate.
     interpolation_order
         The order of interpolation. Must be in the range 0-5.
     origin
@@ -65,17 +88,8 @@ def make_lightcone_slice_interpolator(
         A callable that takes a 3D array of coeval values and returns a 2D array of
         interpolated values on a redshift slice.
     """
-    if not isinstance(cosmo, FLRW):
-        raise ValueError("cosmo must be an astropy FLRW object")
-
-    if redshift is not None and redshift < 0:
-        raise ValueError("redshift must be non-negative")
-
-    if distance_to_shell is not None and distance_to_shell <= 0:
+    if distance_to_shell <= 0:
         raise ValueError("distance_to_shell must be positive")
-
-    if distance_to_shell is None and redshift is None:
-        raise ValueError("either distance_to_shell or redshift must be specified")
 
     if interpolation_order < 0 or interpolation_order > 5:
         raise ValueError("interpolation_order must be in the range 0-5")
@@ -83,15 +97,8 @@ def make_lightcone_slice_interpolator(
     if not isinstance(interpolation_order, int):
         raise TypeError("interpolation_order must be an integer")
 
-    # Determine the radial comoving distance r to the comoving shell at the
-    # frequency of interest.
-    dc = distance_to_shell
-    if dc is None:
-        dc = cosmo.comoving_distance(redshift).value
-
     pixel_coords = transform_to_pixel_coords(
-        coeval_res=coeval_res,
-        comoving_radius=dc,
+        comoving_radius=distance_to_shell,
         latitude=latitude,
         longitude=longitude,
         origin=origin,
@@ -216,7 +223,6 @@ def make_lightcone_slice_vector_field(
 
 def transform_to_pixel_coords(
     *,
-    coeval_res: float,
     comoving_radius: float,
     latitude: np.ndarray,
     longitude: np.ndarray,
@@ -227,10 +233,8 @@ def transform_to_pixel_coords(
 
     Parameters
     ----------
-    coeval_res
-        The resolution of the coeval box.
     comoving_radius
-        The radius of the spherical coordinates (in comoving units).
+        The radius of the spherical coordinates (in units of the cell size).
     latitude
         An array of latitude coordinates onto which to tile the box. In radians from
         -pi/2 to pi/2
@@ -240,14 +244,12 @@ def transform_to_pixel_coords(
     origin
         Define the location of the centre of the spherical shell, assuming that the
         (0,0,0) pixel of the coeval box is at (0,0,0) in cartesian coordinates.
+        In units of the cell size.
     rotation
         The rotation by which to rotate the spherical coordinates before interpolation.
         This is done before shifting the origin, and is equivalent to rotating the
         coeval box beforing tiling it.
     """
-    if coeval_res <= 0:
-        raise ValueError("coeval_res must be positive")
-
     if latitude.shape != longitude.shape:
         raise ValueError("latitude and longitude must have the same shape")
 
@@ -278,8 +280,6 @@ def transform_to_pixel_coords(
     # Apply an offset transformation if desired.
     cart_coords += np.array(origin)[:, None]
 
-    # Divide by the resolution so now the coordinates are in units of pixel number.
-    cart_coords /= coeval_res
     return cart_coords
 
 
@@ -334,15 +334,15 @@ def apply_rsds(
     field
         The field to apply redshift-space distortions to, shape (nslices, ncoords).
     los_displacement
-        The line-of-sight "apparent" displacement of the field, in comoving distance
-        units, equal to ``v_los/H(z)``. Positive values are towards the observer, shape
-        ``(nslices, ncoords)``.
+        The line-of-sight "apparent" displacement of the field, in pixel coordinates.
+        Equal to ``v / H(z) / cell_size``.
+        Positive values are towards the observer, shape ``(nslices, ncoords)``.
     distance
-        The comoving distance to each slice in the field, in the same units as
-        ``los_displacement``, shape (nslices,).
+        The comoving distance to each slice in the field, in units of the cell size.
+        shape (nslices,).
     """
-    regular = np.allclose(np.diff(np.diff(distance)), 0.0)
-    interpolator = RegularGridInterpolator if regular else RectBivariateSpline
+    is_regular = np.allclose(np.diff(np.diff(distance)), 0.0)
+    interpolator = RegularGridInterpolator if is_regular else RectBivariateSpline
 
     # TODO: convert these to distances...
     vmax_towards_observer = np.max(los_displacement[0])
