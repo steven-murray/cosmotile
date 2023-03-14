@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 from typing import Any
+from typing import Sequence
 
 import numpy as np
 import pytest
+from astropy import units as un
+from astropy.cosmology import Planck18
 from scipy.spatial.transform import Rotation as R  # noqa: N817
 
+import cosmotile as cmt
 from cosmotile import make_healpix_lightcone_slice
 from cosmotile import make_lightcone_slice
 
@@ -18,27 +22,24 @@ def test_make_lightcone_slice_inputs() -> None:
     lon = np.random.uniform(size=11) * 2 * np.pi
 
     def call(
-        coeval: np.ndarray = coeval,
-        coeval_res: float = 1.0,
-        redshift: float | None = 10.0,
+        coeval: np.ndarray | Sequence[np.ndarray] = coeval,
         latitude: np.ndarray = lat,
         longitude: np.ndarray = lon,
+        distance_to_shell: float = 1.0,
         **kw: Any,
     ) -> None:
-        make_lightcone_slice(
-            coeval=coeval,
-            coeval_res=coeval_res,
-            redshift=redshift,
-            latitude=latitude,
-            longitude=longitude,
-            **kw,
+        next(
+            make_lightcone_slice(
+                coevals=[coeval] if isinstance(coeval, np.ndarray) else coeval,
+                latitude=latitude,
+                longitude=longitude,
+                distance_to_shell=distance_to_shell,
+                **kw,
+            )
         )
 
-    with pytest.raises(ValueError, match="coeval must have three dimensions"):
+    with pytest.raises(ValueError, match="all coevals must have three dimensions"):
         call(coeval=coeval[0])
-
-    with pytest.raises(ValueError, match="coeval_res must be positive"):
-        call(coeval_res=0)
 
     with pytest.raises(
         ValueError, match="latitude and longitude must have the same shape"
@@ -54,42 +55,22 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(ValueError, match="longitude must be between 0 and 2pi"):
         call(longitude=-1 * np.ones(11))
 
-    with pytest.raises(ValueError, match="cosmo must be an astropy FLRW object"):
-        call(cosmo=None)
-
-    with pytest.raises(ValueError, match="redshift must be non-negative"):
-        call(redshift=-1)
-
     with pytest.raises(ValueError, match="distance_to_shell must be positive"):
         call(distance_to_shell=-1)
-
-    with pytest.raises(
-        ValueError, match="either distance_to_shell or redshift must be specified"
-    ):
-        call(redshift=None, distance_to_shell=None)
 
     with pytest.raises(
         ValueError, match="interpolation_order must be in the range 0-5"
     ):
         call(interpolation_order=1000)
 
-    with pytest.raises(
-        ValueError, match="if any of rsd_displacement is provided, all must be"
-    ):
-        call(rsd_displacement_x=coeval)
+    with pytest.raises(TypeError, match="interpolation_order must be an integer"):
+        call(interpolation_order=1.0)
 
-    with pytest.raises(
-        ValueError, match="rsd_displacements must be same shape as coeval"
-    ):
-        call(
-            rsd_displacement_x=coeval[:-1],
-            rsd_displacement_y=coeval[:-1],
-            rsd_displacement_z=coeval[:-1],
-        )
+    with pytest.raises(ValueError, match="all coevals must have the same shape"):
+        call(coeval=[coeval[:8, :8, :8], coeval])
 
 
-@pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi, None])
-@pytest.mark.parametrize("redshift", [1.0])
+@pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi])
 @pytest.mark.parametrize("origin", [(0, 0, 0), (3, 6, -1), (1000, -1000, np.pi)])
 @pytest.mark.parametrize(
     "rotation",
@@ -98,44 +79,30 @@ def test_make_lightcone_slice_inputs() -> None:
         None,
     ],
 )
-@pytest.mark.parametrize("rsd", [None, 1])
 def test_uniform_box(
     distance_to_shell: float,
     origin: tuple[float, float, float],
     rotation: R | None,
-    redshift: float,
-    rsd: float | None,
 ) -> None:
     """Test that a uniform box gives uniform interpolated values."""
     coeval = np.ones((10, 10, 10))
     lat = np.random.uniform(size=11) * np.pi - np.pi / 2
     lon = np.random.uniform(size=11) * 2 * np.pi
 
-    if rsd is not None:
-        rsdx = np.ones_like(coeval) * rsd
-        rsdy = np.ones_like(coeval) * rsd
-        rsdz = np.ones_like(coeval) * rsd
-    else:
-        rsdx, rsdy, rsdz = None, None, None
-
-    shell = make_lightcone_slice(
-        coeval=coeval,
-        coeval_res=1.0,
-        distance_to_shell=distance_to_shell,
-        redshift=redshift,
-        origin=origin,
-        rotation=rotation,
-        latitude=lat,
-        longitude=lon,
-        rsd_displacement_x=rsdx,
-        rsd_displacement_y=rsdy,
-        rsd_displacement_z=rsdz,
-    )
+    shell = list(
+        make_lightcone_slice(
+            coevals=coeval,
+            distance_to_shell=distance_to_shell,
+            origin=origin,
+            rotation=rotation,
+            latitude=lat,
+            longitude=lon,
+        )
+    )[0]
     assert np.allclose(shell, 1, rtol=1e-8)
 
 
-@pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi, None])
-@pytest.mark.parametrize("redshift", [1.0])
+@pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi])
 @pytest.mark.parametrize("origin", [(0, 0, 0), (3, 6, -1), (1000, -1000, np.pi)])
 @pytest.mark.parametrize(
     "rotation",
@@ -144,84 +111,30 @@ def test_uniform_box(
         None,
     ],
 )
-@pytest.mark.parametrize("rsd", [None, 1])
 def test_random_uniform_box(
     distance_to_shell: float,
     origin: tuple[float, float, float],
     rotation: R | None,
-    redshift: float,
-    rsd: float | None,
 ) -> None:
     """Test that a random uniform box doesn't yield answers bigger than the maximum."""
     coeval = np.random.uniform(size=(12, 13, 14))
     lat = np.random.uniform(size=11) * np.pi - np.pi / 2
     lon = np.random.uniform(size=11) * 2 * np.pi
 
-    if rsd is not None:
-        rsdx = np.ones_like(coeval) * rsd
-        rsdy = np.ones_like(coeval) * rsd
-        rsdz = np.ones_like(coeval) * rsd
-    else:
-        rsdx, rsdy, rsdz = None, None, None
-
-    shell = make_lightcone_slice(
-        coeval=coeval,
-        coeval_res=1.0,
-        distance_to_shell=distance_to_shell,
-        redshift=redshift,
-        origin=origin,
-        rotation=rotation,
-        latitude=lat,
-        longitude=lon,
-        rsd_displacement_x=rsdx,
-        rsd_displacement_y=rsdy,
-        rsd_displacement_z=rsdz,
+    shell = next(
+        make_lightcone_slice(
+            coevals=coeval,
+            distance_to_shell=distance_to_shell,
+            origin=origin,
+            rotation=rotation,
+            latitude=lat,
+            longitude=lon,
+        )
     )
     assert np.all(shell <= 1)
 
 
-@pytest.mark.parametrize("distance_to_shell", [5, 15])
-@pytest.mark.parametrize("rsd", [None, 0, 10])
-def test_stripe(
-    distance_to_shell: float,
-    rsd: float | None,
-) -> None:
-    """Test a box with a single non-zero plane."""
-    coeval = np.zeros((10, 10, 10))
-    coeval[5] = 1.0  # a plane at x=5
-
-    lat = np.array([0, 0, 0, 0, np.pi / 2, -np.pi / 2])  # points on cartesian axes
-    lon = np.array([0, np.pi / 2, np.pi, 3 * np.pi / 2, 0, 0])
-
-    if rsd is not None:
-        rsdx = np.ones_like(coeval) * rsd
-        rsdy = np.zeros_like(coeval)
-        rsdz = np.zeros_like(coeval)
-    else:
-        rsdx, rsdy, rsdz = None, None, None
-
-    shell = make_lightcone_slice(
-        coeval=coeval,
-        coeval_res=1.0,
-        distance_to_shell=distance_to_shell,
-        latitude=lat,
-        longitude=lon,
-        rsd_displacement_x=rsdx,
-        rsd_displacement_y=rsdy,
-        rsd_displacement_z=rsdz,
-    )
-
-    print(shell)
-    assert np.isclose(shell[0], 1.0)
-    assert shell[1] == 0
-    assert np.isclose(shell[2], 1.0)
-    assert shell[3] == 0
-    assert shell[4] == 0
-    assert shell[5] == 0
-
-
-@pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi, None])
-@pytest.mark.parametrize("redshift", [1.0])
+@pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi])
 @pytest.mark.parametrize("origin", [(0, 0, 0), (3, 6, -1), (1000, -1000, np.pi)])
 @pytest.mark.parametrize(
     "rotation",
@@ -234,18 +147,204 @@ def test_healpix(
     distance_to_shell: float,
     origin: tuple[float, float, float],
     rotation: R | None,
-    redshift: float,
 ) -> None:
     """Test that a random uniform box doesn't yield answers bigger than the maximum."""
     coeval = np.random.uniform(size=(12, 13, 14))
 
-    shell = make_healpix_lightcone_slice(
-        coeval=coeval,
-        coeval_res=1.0,
-        distance_to_shell=distance_to_shell,
-        redshift=redshift,
-        origin=origin,
-        rotation=rotation,
-        nside=16,
+    shell = next(
+        make_healpix_lightcone_slice(
+            coevals=coeval,
+            distance_to_shell=distance_to_shell,
+            origin=origin,
+            rotation=rotation,
+            nside=16,
+        )
     )
     assert np.all(shell <= 1)
+
+
+def test_distance_to_shell() -> None:
+    """Test the get_distance_to_shell_from_redshift function."""
+    assert cmt.get_distance_to_shell_from_redshift(
+        z=1, cell_size=1 * un.Mpc, cosmo=Planck18
+    ) < cmt.get_distance_to_shell_from_redshift(
+        z=2, cell_size=1 * un.Mpc, cosmo=Planck18
+    )
+
+    assert cmt.get_distance_to_shell_from_redshift(
+        z=1, cell_size=1 * un.Mpc, cosmo=Planck18
+    ) == 2 * cmt.get_distance_to_shell_from_redshift(
+        z=1, cell_size=2 * un.Mpc, cosmo=Planck18
+    )
+
+
+def test_lightcone_slice_vector_field() -> None:
+    """Test the make_lightcone_slice_vector_field function."""
+    coeval = np.ones((10, 10, 10))
+    distance_to_shell = 1.0 * un.pixel
+    lat = np.zeros(21)
+    lon = np.linspace(0, 2 * np.pi, 21)
+
+    # put points at the poles for testing
+    lat = np.append(lat, [np.pi / 2, -np.pi / 2])
+    lon = np.append(lon, [0, 0])
+
+    # all displacement is in x-direction
+    rsds = [
+        [
+            np.ones_like(coeval) * un.pixel,
+            np.zeros_like(coeval) * un.pixel,
+            np.zeros_like(coeval) * un.pixel,
+        ]
+    ]
+
+    interpolator = cmt.make_lightcone_slice_interpolator(
+        latitude=lat, longitude=lon, distance_to_shell=distance_to_shell
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="coeval_vector_fields must be a sequence of 3-tuples. Got length",
+    ):
+        cmt.make_lightcone_slice_vector_field(
+            interpolator=interpolator,
+            coeval_vector_fields=[rsds[0][:2]],
+        )
+
+    with pytest.raises(
+        ValueError, match="all coeval vector fields must have the same shape."
+    ):
+        cmt.make_lightcone_slice_vector_field(
+            interpolator=interpolator,
+            coeval_vector_fields=[rsds[0][0][1:], rsds[0][1], rsds[0][2]],
+        )
+
+    los = list(
+        cmt.make_lightcone_slice_vector_field(
+            interpolator=interpolator,
+            coeval_vector_fields=rsds,
+        )
+    )[0]
+
+    assert los[0] == -1 * un.pixel
+    assert los[10] == 1 * un.pixel
+    assert los[20] == -1 * un.pixel
+    assert np.isclose(los[21], 0 * un.pixel)
+    assert np.isclose(los[22], 0 * un.pixel)
+
+
+def test_apply_rsds() -> None:
+    """Test the apply_rsds function."""
+    field = np.ones((2, 10))
+    losv = np.ones((2, 10)) * un.pixel
+    losv[1] = -1 * un.pixel
+    distance = np.array([10, 11]) * un.pixel
+
+    with pytest.raises(ValueError, match="field must have at least 2 slices"):
+        cmt.apply_rsds(
+            field=field[:1],
+            los_displacement=losv[:1],
+            distance=distance[:1],
+            n_subcells=1,
+        )
+
+    with pytest.raises(
+        ValueError, match="field and los_displacement must have the same shape"
+    ):
+        cmt.apply_rsds(
+            field=field[:, :9],
+            los_displacement=losv,
+            distance=distance,
+            n_subcells=1,
+        )
+
+    with pytest.raises(
+        ValueError, match="field and distance must have the same number"
+    ):
+        cmt.apply_rsds(
+            field=field,
+            los_displacement=losv,
+            distance=distance[:1],
+            n_subcells=1,
+        )
+
+    # Here, the close slice all moves inward, and the far slice all moves outward,
+    # so nothing left in the field.
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=losv,
+        distance=distance,
+        n_subcells=1,
+    )
+
+    np.all(out == 0)
+
+    # Now, they both point inwards, so we should end up with all ones.
+    losv = np.ones((2, 10)) * un.pixel
+    losv[0] = -1 * un.pixel
+
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=losv,
+        distance=distance,
+        n_subcells=1,
+    )
+
+    np.all(out == 1)
+
+    # In fact, any velocity field that is constant should keep the out constant.
+    losv = 3 * np.ones((2, 10)) * un.pixel
+
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=losv,
+        distance=distance,
+        n_subcells=1,
+    )
+
+    np.all(out == 1)
+
+    # Here, every pixel goes to the middle, but this *just* includes the two pixels
+    # we put in.
+    losv = (
+        np.array(
+            [
+                -0.5 * np.ones(10),
+                0.5 * np.ones(10),
+            ]
+        )
+        * un.pixel
+    )
+
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=losv,
+        distance=distance,
+        n_subcells=1,
+    )
+
+    np.all(out == 1)
+
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=losv,
+        distance=distance,
+        n_subcells=4,
+    )
+
+    np.all(out == 1)
+
+    # Now, change the distance ever so slightly, so we use the other interpolator.
+    field = np.ones((7, 10))
+
+    losv = np.zeros((7, 10)) * un.pixel
+    distance = np.array([10, 11.001, 12, 13, 14, 15, 16]) * un.pixel
+
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=losv,
+        distance=distance,
+        n_subcells=1,
+    )
+
+    np.allclose(out, 1, atol=2e-3)

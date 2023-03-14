@@ -5,8 +5,9 @@ from __future__ import annotations
 from functools import partial
 from typing import Any
 from typing import Callable
-from typing import Iterable
+from typing import Generator
 from typing import Literal
+from typing import Sequence
 
 import numpy as np
 from astropy import units as un
@@ -43,7 +44,7 @@ def get_distance_to_shell_from_redshift(
     distance
         The distance, in units of pixels, to the shell.
     """
-    return (cosmo.comoving_distance(z) / cell_size).to(
+    return (cosmo.comoving_distance(z)).to(
         un.pixel, un.pixel_scale(cell_size / un.pixel)
     )
 
@@ -53,11 +54,10 @@ def make_lightcone_slice_interpolator(
     latitude: np.ndarray,
     longitude: np.ndarray,
     distance_to_shell: float,
-    #    cosmo: FLRW = Planck18,
     interpolation_order: int = 1,
     origin: tuple[float, float, float] = (0, 0, 0),
     rotation: Rotation | None = None,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+) -> partial[np.ndarray]:
     """
     Create a callable interpolator for a lightcone slice.
 
@@ -129,11 +129,12 @@ Returns
 lightcone_slice
     A 2D array of float interpolated values on the lightcone slice.
 """
+    return coordmap
 
 
 def make_lightcone_slice(
-    *, coevals: Iterable[np.ndarray], **kwargs
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    *, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs: Any
+) -> Generator:
     """
     Create a lightcone slice in angular coordinates from two coeval simulations.
 
@@ -156,7 +157,7 @@ def make_lightcone_slice(
     field
         Each interpolated field on the angular coordinates.
     """
-    if hasattr(coevals, "ndim") and coevals.ndim == 3:
+    if isinstance(coevals, np.ndarray) and coevals.ndim == 3:
         coevals = [coevals]
 
     if any(cv.ndim != 3 for cv in coevals):
@@ -172,9 +173,9 @@ def make_lightcone_slice(
 
 
 def make_lightcone_slice_vector_field(
-    coeval_vector_fields: Iterable[Iterable[np.ndarray, np.ndarray, np.ndarray]],
+    coeval_vector_fields: Sequence[Sequence[np.ndarray]],
     interpolator: Callable[[np.ndarray], np.ndarray],
-):
+) -> Generator:
     """
     Interpolate a 3D vector field to a lightcone slice as a line-of-sight component.
 
@@ -204,7 +205,7 @@ def make_lightcone_slice_vector_field(
     for i, cvf in enumerate(coeval_vector_fields):
         if len(cvf) != 3:
             raise ValueError(
-                "coeval_vector_fields must be an iterable of 3-tuples. Got length "
+                "coeval_vector_fields must be a sequence of 3-tuples. Got length "
                 f"{len(cvf)} at index {i}"
             )
         if any(c.shape != cvf[0].shape for c in cvf):
@@ -213,11 +214,11 @@ def make_lightcone_slice_vector_field(
                 f"got shapes {[c.shape for c in cvf]}"
             )
 
-        cvf = np.array([interpolator(c) for c in cvf])
+        cvf = np.array([interpolator(c) for c in cvf]) * cvf[0].unit
 
         # Now take the dot product of the vector field with (negative) pixel coordinates to get
         # the LoS comp.
-        cvf *= -pixel_coords
+        cvf = cvf * -pixel_coords
         yield np.sum(cvf, axis=0) / coord_norm
 
 
@@ -285,7 +286,7 @@ def transform_to_pixel_coords(
 
 def make_healpix_lightcone_slice(
     nside: int, order: Literal["ring", "nested"] = "ring", **kwargs: Any
-) -> np.ndarray:
+) -> Generator:
     """
     Create a healpix lightcone slice in angular coordinates.
 
@@ -306,7 +307,7 @@ def make_healpix_lightcone_slice(
     hp = HEALPix(nside=nside, order=order)
     lon, lat = hp.healpix_to_lonlat(np.arange(hp.npix))
 
-    return make_lightcone_slice(
+    yield from make_lightcone_slice(
         latitude=lat.to_value("radian"), longitude=lon.to_value("radian"), **kwargs
     )
 
@@ -341,26 +342,53 @@ def apply_rsds(
         The comoving distance to each slice in the field, in units of the cell size.
         shape (nslices,).
     """
+    if field.shape != los_displacement.shape:
+        raise ValueError("field and los_displacement must have the same shape")
+    if field.shape[0] < 2:
+        raise ValueError("field must have at least 2 slices")
+    if field.shape[0] != distance.size:
+        raise ValueError("field and distance must have the same number of slices")
+
     is_regular = np.allclose(np.diff(np.diff(distance)), 0.0)
     interpolator = RegularGridInterpolator if is_regular else RectBivariateSpline
 
     # TODO: convert these to distances...
-    vmax_towards_observer = np.max(los_displacement[0])
-    vmax_away_from_observer = np.max(-los_displacement[-1])
+    vmax_towards_observer = max(np.max(los_displacement[0]), 0)
+    vmax_away_from_observer = min(0, np.min(los_displacement[-1]))
 
     smallest_slice = np.min(np.diff(distance))
     rsd_dx = smallest_slice / n_subcells
 
     fine_grid = np.arange(
-        distance - vmax_away_from_observer, distance[-1] + vmax_towards_observer, rsd_dx
+        (distance.min() - vmax_towards_observer).to_value(rsd_dx.unit),
+        (distance.max() - vmax_away_from_observer).to_value(rsd_dx.unit),
+        rsd_dx.value,
     )
+    if fine_grid.max() < distance.max().to_value(rsd_dx.unit):
+        fine_grid = np.append(fine_grid, distance.max().to_value(rsd_dx.unit))
+
     ang_coords = np.arange(field.shape[1])
-    fine_field = interpolator(distance, ang_coords, field)(fine_grid, ang_coords)
-    fine_rsd = interpolator(distance, ang_coords, los_displacement / rsd_dx)(
-        fine_grid, ang_coords
-    )
+    if is_regular:
+        X, Y = np.meshgrid(fine_grid, ang_coords, indexing="ij")
+        grid = (X.flatten(), Y.flatten())
+        fine_field = interpolator(
+            (distance, ang_coords), field, bounds_error=False, fill_value=None
+        )(grid).reshape(X.shape)
+        fine_rsd = interpolator(
+            (distance, ang_coords),
+            los_displacement / rsd_dx,
+            bounds_error=False,
+            fill_value=None,
+        )(grid).reshape(X.shape)
+    else:
+        fine_field = interpolator(distance, ang_coords, field)(fine_grid, ang_coords)
+        fine_rsd = interpolator(distance, ang_coords, los_displacement / rsd_dx)(
+            fine_grid, ang_coords
+        )
     fine_field = cloud_in_cell_los(fine_field, fine_rsd)
 
-    return RegularGridInterpolator(fine_grid, ang_coords, fine_field)(
-        distance, ang_coords
-    )
+    X, Y = np.meshgrid(distance, ang_coords, indexing="ij")
+
+    return RegularGridInterpolator((fine_grid, ang_coords), fine_field)(
+        (X.flatten(), Y.flatten())
+    ).reshape(X.shape)

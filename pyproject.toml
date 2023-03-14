@@ -98,7 +98,7 @@ strict_concatenate = true
 check_untyped_defs = true
 disallow_subclassing_any = true
 disallow_untyped_decorators = true
-
+disable_error_code = "attr-defined"
 # This one fails on types like `np.ndarray`
 #disallow_any_generics = true
 

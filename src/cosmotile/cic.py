@@ -132,18 +132,17 @@ def cloud_in_cell_los(
         ddx = delta_los[ii]
         x = ii + ddx
 
-        i = int(x)
+        i = x.astype(np.int32)
         ip = i + 1
 
         tx = ip - x
         ddx = 1 - tx
 
-        # Do the trilinear interpolation to surrounding 8 cells
-        if 0 < i < nslice:
-            out[i] += tx * weight
-        if 0 < ip < nslice:
-            out[ip] += ddx * weight
-
+        for jj in range(nangles):
+            if 0 <= i[jj] < nslice:
+                out[i[jj], jj] += tx[jj] * weight[jj]
+            if 0 <= ip[jj] < nslice:
+                out[ip[jj], jj] += ddx[jj] * weight[jj]
     return out
 
 
