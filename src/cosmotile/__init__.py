@@ -224,10 +224,10 @@ def make_lightcone_slice_vector_field(
 
 def transform_to_pixel_coords(
     *,
-    comoving_radius: float,
+    comoving_radius: un.Quantity[un.pixel],
     latitude: np.ndarray,
     longitude: np.ndarray,
-    origin: tuple[float, float, float] = (0, 0, 0),
+    origin: un.Quantity[un.pixel, (3,), float] | None = None,
     rotation: Rotation | None = None,
 ) -> np.ndarray:
     """Transform input spherical coordinates to pixel coordinates wrt a coeval box.
@@ -279,7 +279,10 @@ def transform_to_pixel_coords(
         cart_coords = np.dot(rotation.as_matrix(), cart_coords)
 
     # Apply an offset transformation if desired.
-    cart_coords += np.array(origin)[:, None]
+    if origin is not None:
+        if origin.shape != (3,):
+            raise ValueError("provided origin must a length-3 Quantity")
+        cart_coords += origin[:, None]
 
     return cart_coords
 
