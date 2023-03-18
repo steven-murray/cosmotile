@@ -113,6 +113,10 @@ def make_lightcone_slice_interpolator(
         prefilter=False,
     )
 
+    # Save the origin to the coordmap because it's useful for getting
+    # line-of-sight vectors.
+    coordmap.origin = origin
+
     coordmap.__name__ = "lightcone_slice_interpolator"
     coordmap.__doc__ = """Interpolate a coeval box to a lightcone slice at a given redshift.
 
@@ -201,6 +205,9 @@ def make_lightcone_slice_vector_field(
         The line-of-sight component of each interpolated vector field.
     """
     pixel_coords = interpolator.keywords["coordinates"]
+    if interpolator.origin is not None:
+        pixel_coords = pixel_coords - interpolator.origin[:, None]
+
     coord_norm = np.sqrt(np.sum(np.square(pixel_coords), axis=0))
     for i, cvf in enumerate(coeval_vector_fields):
         if len(cvf) != 3:
