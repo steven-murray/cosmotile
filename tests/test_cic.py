@@ -82,6 +82,6 @@ def test_cic_los() -> None:
     los = np.zeros((11, 20))
 
     with pytest.raises(
-        ValueError, match="Field and line-of-sight must have the same shape."
+        ValueError, match="Field and displacement must have the same shape."
     ):
         cic_los(field, los)

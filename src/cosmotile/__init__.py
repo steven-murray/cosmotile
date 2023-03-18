@@ -55,7 +55,7 @@ def make_lightcone_slice_interpolator(
     longitude: np.ndarray,
     distance_to_shell: float,
     interpolation_order: int = 1,
-    origin: tuple[float, float, float] = (0, 0, 0),
+    origin: np.ndarray | tuple[float, float, float] | None = None,
     rotation: Rotation | None = None,
 ) -> partial[np.ndarray]:
     """
@@ -234,7 +234,9 @@ def transform_to_pixel_coords(
     comoving_radius: un.Quantity[un.pixel],
     latitude: np.ndarray,
     longitude: np.ndarray,
-    origin: un.Quantity[un.pixel, (3,), float] | None = None,
+    origin: un.Quantity[un.pixel, (3,), float]
+    | tuple[float, float, float]
+    | None = None,
     rotation: Rotation | None = None,
 ) -> np.ndarray:
     """Transform input spherical coordinates to pixel coordinates wrt a coeval box.
@@ -287,6 +289,8 @@ def transform_to_pixel_coords(
 
     # Apply an offset transformation if desired.
     if origin is not None:
+        if isinstance(origin, (list, tuple)):
+            origin = np.array(origin)
         if origin.shape != (3,):
             raise ValueError("provided origin must a length-3 Quantity")
         cart_coords += origin[:, None]
