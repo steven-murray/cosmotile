@@ -357,7 +357,7 @@ def test_apply_rsds() -> None:
     np.allclose(out, 1, atol=2e-3)
 
 
-def test_vector_field_nonzero_origin():
+def test_vector_field_nonzero_origin() -> None:
     """Test that moving the origin doesn't change the LoS component of a static vfield.
 
     This was originally a bug -- while the field is homogeneous, and so the origin
@@ -393,7 +393,7 @@ def test_vector_field_nonzero_origin():
     np.testing.assert_allclose(los, los_origin, atol=1e-6, rtol=1e-6)
 
 
-def test_transform_with_different_origin_types():
+def test_transform_with_different_origin_types() -> None:
     """Test that passing the same origin using different types works as expected."""
     latitude = np.zeros(21)
     longitude = np.linspace(0, 2 * np.pi, 21)
