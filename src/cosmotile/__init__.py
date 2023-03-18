@@ -227,12 +227,12 @@ def make_lightcone_slice_vector_field(
                 f"got shapes {[c.shape for c in cvf]}"
             )
         unit = getattr(cvf[0], "unit", 1)
-        cvf = np.array([interpolator(c) for c in cvf]) * unit
+        cvf_interp = np.array([interpolator(c) for c in cvf]) * unit
 
         # Now take the dot product of the vector field with (negative) pixel coordinates to get
         # the LoS comp.
-        cvf = cvf * -pixel_coords
-        yield np.sum(cvf, axis=0) / coord_norm
+        cvf_interp *= -pixel_coords
+        yield np.sum(cvf_interp, axis=0) / coord_norm
 
 
 def transform_to_pixel_coords(
