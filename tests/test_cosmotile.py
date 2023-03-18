@@ -69,6 +69,9 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(ValueError, match="all coevals must have the same shape"):
         call(coeval=[coeval[:8, :8, :8], coeval])
 
+    with pytest.raises(ValueError, match="origin must be a sequence of length 3"):
+        call(origin=(1, 2, 3, 4))
+
 
 @pytest.mark.parametrize("distance_to_shell", [5, 20, np.pi])
 @pytest.mark.parametrize("origin", [(0, 0, 0), (3, 6, -1), (1000, -1000, np.pi)])
@@ -352,3 +355,61 @@ def test_apply_rsds() -> None:
     )
 
     np.allclose(out, 1, atol=2e-3)
+
+
+def test_vector_field_nonzero_origin():
+    """Test that moving the origin doesn't change the LoS component of a static vfield.
+
+    This was originally a bug -- while the field is homogeneous, and so the origin
+    can be arbitrary, when taking the line-of-sight component of a field, we have to make
+    sure that the coordinates are correct with respect to an actual origin, otherwise
+    the dot product of the vector field with the coordinates is wrong.
+    """
+    vx = np.ones((10, 10, 10))
+    vy = np.zeros((10, 10, 10))
+    vz = np.zeros((10, 10, 10))
+
+    latitude = np.zeros(21)
+    longitude = np.linspace(0, 2 * np.pi, 21)
+    interpolator = cmt.make_lightcone_slice_interpolator(
+        longitude=longitude,
+        latitude=latitude,
+        distance_to_shell=5.5,
+    )
+
+    interpolator_origin = cmt.make_lightcone_slice_interpolator(
+        longitude=longitude,
+        latitude=latitude,
+        distance_to_shell=5.5,
+        origin=(1, 2, 3),
+    )
+
+    los = next(cmt.make_lightcone_slice_vector_field([[vx, vy, vz]], interpolator))
+
+    los_origin = next(
+        cmt.make_lightcone_slice_vector_field([[vx, vy, vz]], interpolator_origin)
+    )
+
+    np.testing.assert_allclose(los, los_origin, atol=1e-6, rtol=1e-6)
+
+
+def test_transform_with_different_origin_types():
+    """Test that passing the same origin using different types works as expected."""
+    latitude = np.zeros(21)
+    longitude = np.linspace(0, 2 * np.pi, 21)
+
+    tuple_origin = cmt.transform_to_pixel_coords(
+        comoving_radius=10,
+        latitude=latitude,
+        longitude=longitude,
+        origin=(1, 2, 3),
+    )
+
+    array_origin = cmt.transform_to_pixel_coords(
+        comoving_radius=10,
+        latitude=latitude,
+        longitude=longitude,
+        origin=np.ndarray([1, 2, 3]),
+    )
+
+    assert np.testing.assert_equal(tuple_origin, array_origin)
