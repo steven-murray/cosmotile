@@ -409,7 +409,7 @@ def test_transform_with_different_origin_types():
         comoving_radius=10,
         latitude=latitude,
         longitude=longitude,
-        origin=np.ndarray([1, 2, 3]),
+        origin=np.array([1, 2, 3]),
     )
 
-    assert np.testing.assert_equal(tuple_origin, array_origin)
+    np.testing.assert_equal(tuple_origin, array_origin)
