@@ -97,6 +97,12 @@ def make_lightcone_slice_interpolator(
     if not isinstance(interpolation_order, int):
         raise TypeError("interpolation_order must be an integer")
 
+    if isinstance(origin, (tuple, list)):
+        origin = np.array(origin)
+
+    if origin is not None and origin.shape != (3,):
+        raise ValueError("origin must be a sequence of length 3")
+
     pixel_coords = transform_to_pixel_coords(
         comoving_radius=distance_to_shell,
         latitude=latitude,
@@ -220,8 +226,8 @@ def make_lightcone_slice_vector_field(
                 f"all coeval vector fields must have the same shape. For index {i}, "
                 f"got shapes {[c.shape for c in cvf]}"
             )
-
-        cvf = np.array([interpolator(c) for c in cvf]) * cvf[0].unit
+        unit = getattr(cvf[0], "unit", 1)
+        cvf = np.array([interpolator(c) for c in cvf]) * unit
 
         # Now take the dot product of the vector field with (negative) pixel coordinates to get
         # the LoS comp.
@@ -289,10 +295,8 @@ def transform_to_pixel_coords(
 
     # Apply an offset transformation if desired.
     if origin is not None:
-        if isinstance(origin, (list, tuple)):
+        if not isinstance(origin, np.ndarray):
             origin = np.array(origin)
-        if origin.shape != (3,):
-            raise ValueError("provided origin must a length-3 Quantity")
         cart_coords += origin[:, None]
 
     return cart_coords
