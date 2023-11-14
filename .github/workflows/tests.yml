@@ -55,12 +55,12 @@ jobs:
 
       - name: Install Poetry
         run: |
-          pipx install --pip-args=--constraint=.github/workflows/constraints.txt poetry
+          pipx install --pip-args=--constraint=.github/workflows/constraints.txt poetry --python $(which python)
           poetry --version
 
       - name: Install Nox
         run: |
-          pipx install --pip-args=--constraint=.github/workflows/constraints.txt nox
+          pipx install --pip-args=--constraint=.github/workflows/constraints.txt nox --python $(which python)
           pipx inject --pip-args=--constraint=.github/workflows/constraints.txt nox nox-poetry
           nox --version
 
