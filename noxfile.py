@@ -60,7 +60,7 @@ def tests_nojit(session: nox.Session) -> None:
 def coverage(session: nox.Session) -> None:
     """Produce the coverage report."""
     args = session.posargs or ["report"]
-
+    session.install(".")
     session.install("coverage[toml]")
 
     if not session.posargs and any(Path().glob(".coverage.*")):
