@@ -1,68 +1,64 @@
-[tool.poetry]
+[build-system]
+requires = [
+    "setuptools>=60",
+    "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "cosmotile"
-version = "0.1.1"
 description = "Cosmotile"
-authors = ["Steven Murray <steven.g.murray@asu.edu>"]
-license = "MIT"
+authors = [
+    {name="Steven Murray", email="steven.murray@sns.it"}
+]
 readme = "README.md"
-homepage = "https://github.com/steven-murray/cosmotile"
-repository = "https://github.com/steven-murray/cosmotile"
-documentation = "https://cosmotile.readthedocs.io"
+requires-python = ">=3.8,<4.0"
+license = {file = "LICENSE", classifier = "MIT"}
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dynamic = ["version"]
+
+
+dependencies = [
+    "click>=8.0.1",
+    "numpy>=1.23.4",
+    "scipy>=1.9.3",
+    "astropy>=5.1.1",
+    "astropy-healpix>=0.7",
 ]
 
-[tool.poetry.urls]
-Changelog = "https://github.com/steven-murray/cosmotile/releases"
+[project.urls]
+homepage = "https://github.com/steven-murray/cosmotile"
+documentation = "https://cosmotile.readthedocs.io"
+changelog = "https://github.com/steven-murray/cosmotile/releases"
 
-[tool.poetry.dependencies]
-python = ">=3.8,<4.0"
-click = ">=8.0.1"
-numpy = ">=1.23.4"
-scipy = ">=1.9.3"
-astropy = ">=5.1.1"
-astropy-healpix = ">=0.7"
+[project.optional-dependencies]
+perf = [
+    "numba>=0.56.4",
+]
+dev = [
+    "sphinx>=4.3.2",
+    "sphinx-click>=3.0.2",
+    "sphinx-autobuild>=2021.3.14",
+    "myst-parser>=0.16.1",
+    "furo>=2021.11.12",
+    "pytest>=6.2.5",
+    "coverage[toml]>=6.2",
+    "pytest-cov>=3.0.0",
+    "pre-commit"
+]
 
-# A list of all of the optional dependencies, some of which are included in the
-# below `extras`. They can be opted into by apps.
-numba = { version = ">=0.56.4", optional = true }
-
-[tool.poetry.extras]
-perf = ["numba"]
-all = ["numba"]
-
-[tool.poetry.dev-dependencies]
-Pygments = ">=2.10.0"
-black = ">=21.10b0"
-coverage = {extras = ["toml"], version = ">=6.2"}
-darglint = ">=1.8.1"
-flake8 = ">=4.0.1"
-flake8-bandit = ">=2.1.2"
-flake8-bugbear = ">=21.9.2"
-flake8-docstrings = ">=1.6.0"
-flake8-rst-docstrings = ">=0.2.5"
-furo = ">=2021.11.12"
-isort = ">=5.10.1"
-mypy = ">=0.930"
-pep8-naming = ">=0.12.1"
-pre-commit = ">=2.16.0"
-pre-commit-hooks = ">=4.1.0"
-pytest = ">=6.2.5"
-pyupgrade = ">=2.29.1"
-safety = ">=1.10.3"
-sphinx = ">=4.3.2"
-sphinx-autobuild = ">=2021.3.14"
-sphinx-click = ">=3.0.2"
-typeguard = ">=2.13.3"
-xdoctest = {extras = ["colors"], version = ">=0.15.10"}
-myst-parser = {version = ">=0.16.1"}
-
-[tool.poetry.scripts]
-cosmotile = "cosmotile.__main__:main"
-
-[tool.poetry.group.dev.dependencies]
-build = "^0.9.0"
-twine = "^4.0.1"
+all = [
+    "cosmotile[perf,dev]"
+]
 
 [tool.coverage.paths]
 source = ["src", "*/site-packages"]
@@ -112,6 +108,8 @@ no_implicit_reexport = true
 
 # This one can be tricky to get passing if you use a lot of untyped libraries
 warn_return_any = false
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+
+[tool.setuptools_scm]
+write_to = "src/cosmotile/_version.py"
+parentdir_prefix_version = "cosmotile-"
+fallback_version = "0.0.0"
