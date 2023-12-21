@@ -19,8 +19,11 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import map_coordinates
 from scipy.spatial.transform import Rotation
 
+from . import _version
 from .cic import cloud_in_cell_los
 
+
+__version__ = _version.version
 
 _LENGTH = "length"
 

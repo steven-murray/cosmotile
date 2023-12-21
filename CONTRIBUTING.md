@@ -37,29 +37,14 @@ Request features on the [Issue Tracker].
 
 ## How to set up your development environment
 
-You need Python 3.8+ and the following tools:
-
-- [Poetry]
-- [Nox]
-- [nox-poetry]
-
-Install the package with development requirements:
+You need Python 3.8+. Install the package with development requirements:
 
 ```console
-$ poetry install
+$ pip install -e .
 ```
 
-You can now run an interactive Python session,
-or the command-line interface:
+You can now run an interactive Python session.
 
-```console
-$ poetry run python
-$ poetry run cosmotile
-```
-
-[poetry]: https://python-poetry.org/
-[nox]: https://nox.thea.codes/
-[nox-poetry]: https://nox-poetry.readthedocs.io/
 
 ## How to test the project
 
