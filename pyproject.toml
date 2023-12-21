@@ -68,9 +68,6 @@ tests = ["tests", "*/tests"]
 branch = true
 source = ["cosmotile"]
 omit = [
-    "*/tests/*",
-    "*/site-packages/*",
-    "*/__main__.py",
     "*/_version.py"
 ]
 
