@@ -67,6 +67,12 @@ tests = ["tests", "*/tests"]
 [tool.coverage.run]
 branch = true
 source = ["cosmotile"]
+omit = [
+    "*/tests/*",
+    "*/site-packages/*",
+    "*/__main__.py",
+    "*/_version.py"
+]
 
 [tool.coverage.report]
 show_missing = true
