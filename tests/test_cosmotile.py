@@ -1,8 +1,8 @@
 """Basic tests of cosmotile algorithm."""
 from __future__ import annotations
 
-from typing import Any
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import pytest
