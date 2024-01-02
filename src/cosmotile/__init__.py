@@ -5,9 +5,9 @@ from __future__ import annotations
 from functools import partial
 from typing import Any
 from typing import Callable
-from typing import Generator
+from collections.abc import Generator
 from typing import Literal
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from astropy import units as un
