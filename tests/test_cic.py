@@ -1,4 +1,5 @@
 """Tests of the cloud-in-cell function."""
+
 import numpy as np
 import pytest
 

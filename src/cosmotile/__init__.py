@@ -243,9 +243,9 @@ def transform_to_pixel_coords(
     comoving_radius: un.Quantity[un.pixel],
     latitude: np.ndarray,
     longitude: np.ndarray,
-    origin: un.Quantity[un.pixel, (3,), float]
-    | tuple[float, float, float]
-    | None = None,
+    origin: (
+        un.Quantity[un.pixel, (3,), float] | tuple[float, float, float] | None
+    ) = None,
     rotation: Rotation | None = None,
 ) -> np.ndarray:
     """Transform input spherical coordinates to pixel coordinates wrt a coeval box.
