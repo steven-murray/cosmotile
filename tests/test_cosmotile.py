@@ -45,7 +45,7 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(
         ValueError, match="latitude and longitude must have the same shape"
     ):
-        call(latitude=np.concatenate((lat, [0])))  # type: ignore[arg-type]
+        call(latitude=np.concatenate((lat, [0])))
 
     with pytest.raises(ValueError, match="latitude and longitude must be 1D arrays"):
         call(latitude=np.zeros((11, 11)), longitude=np.zeros((11, 11)))
