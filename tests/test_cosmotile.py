@@ -12,15 +12,15 @@ from astropy.cosmology import Planck18
 from scipy.spatial.transform import Rotation as R  # noqa: N817
 
 import cosmotile as cmt
-from cosmotile import make_healpix_lightcone_slice
-from cosmotile import make_lightcone_slice
+from cosmotile import make_healpix_lightcone_slice, make_lightcone_slice
 
 
 def test_make_lightcone_slice_inputs() -> None:
     """Simple tests that bad inputs raise appropriate errors."""
-    coeval = np.random.uniform(size=(10, 10, 10))
-    lat = np.random.uniform(size=11) * np.pi - np.pi / 2
-    lon = np.random.uniform(size=11) * 2 * np.pi
+    rng = np.random.default_rng()
+    coeval = rng.uniform(size=(10, 10, 10))
+    lat = rng.uniform(size=11) * np.pi - np.pi / 2
+    lon = rng.uniform(size=11) * 2 * np.pi
 
     def call(
         coeval: np.ndarray | Sequence[np.ndarray] = coeval,
@@ -42,9 +42,7 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(ValueError, match="all coevals must have three dimensions"):
         call(coeval=coeval[0])
 
-    with pytest.raises(
-        ValueError, match="latitude and longitude must have the same shape"
-    ):
+    with pytest.raises(ValueError, match="latitude and longitude must have the same shape"):
         call(latitude=np.concatenate((lat, [0])))
 
     with pytest.raises(ValueError, match="latitude and longitude must be 1D arrays"):
@@ -59,9 +57,7 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(ValueError, match="distance_to_shell must be positive"):
         call(distance_to_shell=-1)
 
-    with pytest.raises(
-        ValueError, match="interpolation_order must be in the range 0-5"
-    ):
+    with pytest.raises(ValueError, match="interpolation_order must be in the range 0-5"):
         call(interpolation_order=1000)
 
     with pytest.raises(TypeError, match="interpolation_order must be an integer"):
@@ -89,11 +85,12 @@ def test_uniform_box(
     rotation: R | None,
 ) -> None:
     """Test that a uniform box gives uniform interpolated values."""
+    rng = np.random.default_rng()
     coeval = np.ones((10, 10, 10))
-    lat = np.random.uniform(size=11) * np.pi - np.pi / 2
-    lon = np.random.uniform(size=11) * 2 * np.pi
+    lat = rng.uniform(size=11) * np.pi - np.pi / 2
+    lon = rng.uniform(size=11) * 2 * np.pi
 
-    shell = list(
+    shell = next(
         make_lightcone_slice(
             coevals=coeval,
             distance_to_shell=distance_to_shell,
@@ -102,7 +99,7 @@ def test_uniform_box(
             latitude=lat,
             longitude=lon,
         )
-    )[0]
+    )
     assert np.allclose(shell, 1, rtol=1e-8)
 
 
@@ -121,9 +118,10 @@ def test_random_uniform_box(
     rotation: R | None,
 ) -> None:
     """Test that a random uniform box doesn't yield answers bigger than the maximum."""
-    coeval = np.random.uniform(size=(12, 13, 14))
-    lat = np.random.uniform(size=11) * np.pi - np.pi / 2
-    lon = np.random.uniform(size=11) * 2 * np.pi
+    rng = np.random.default_rng()
+    coeval = rng.uniform(size=(12, 13, 14))
+    lat = rng.uniform(size=11) * np.pi - np.pi / 2
+    lon = rng.uniform(size=11) * 2 * np.pi
 
     shell = next(
         make_lightcone_slice(
@@ -153,7 +151,8 @@ def test_healpix(
     rotation: R | None,
 ) -> None:
     """Test that a random uniform box doesn't yield answers bigger than the maximum."""
-    coeval = np.random.uniform(size=(12, 13, 14))
+    rng = np.random.default_rng()
+    coeval = rng.uniform(size=(12, 13, 14))
 
     shell = next(
         make_healpix_lightcone_slice(
@@ -171,15 +170,11 @@ def test_distance_to_shell() -> None:
     """Test the get_distance_to_shell_from_redshift function."""
     assert cmt.get_distance_to_shell_from_redshift(
         z=1, cell_size=1 * un.Mpc, cosmo=Planck18
-    ) < cmt.get_distance_to_shell_from_redshift(
-        z=2, cell_size=1 * un.Mpc, cosmo=Planck18
-    )
+    ) < cmt.get_distance_to_shell_from_redshift(z=2, cell_size=1 * un.Mpc, cosmo=Planck18)
 
     assert cmt.get_distance_to_shell_from_redshift(
         z=1, cell_size=1 * un.Mpc, cosmo=Planck18
-    ) == 2 * cmt.get_distance_to_shell_from_redshift(
-        z=1, cell_size=2 * un.Mpc, cosmo=Planck18
-    )
+    ) == 2 * cmt.get_distance_to_shell_from_redshift(z=1, cell_size=2 * un.Mpc, cosmo=Planck18)
 
 
 def test_lightcone_slice_vector_field() -> None:
@@ -217,9 +212,7 @@ def test_lightcone_slice_vector_field() -> None:
             )
         )
 
-    with pytest.raises(
-        ValueError, match="all coeval vector fields must have the same shape."
-    ):
+    with pytest.raises(ValueError, match="all coeval vector fields must have the same shape."):
         next(
             cmt.make_lightcone_slice_vector_field(
                 interpolator=interpolator,
@@ -227,12 +220,12 @@ def test_lightcone_slice_vector_field() -> None:
             )
         )
 
-    los = list(
+    los = next(
         cmt.make_lightcone_slice_vector_field(
             interpolator=interpolator,
             coeval_vector_fields=rsds,
         )
-    )[0]
+    )
 
     assert los[0] == -1 * un.pixel
     assert los[10] == 1 * un.pixel
@@ -256,9 +249,7 @@ def test_apply_rsds() -> None:
             n_subcells=1,
         )
 
-    with pytest.raises(
-        ValueError, match="field and los_displacement must have the same shape"
-    ):
+    with pytest.raises(ValueError, match="field and los_displacement must have the same shape"):
         cmt.apply_rsds(
             field=field[:, :9],
             los_displacement=losv,
@@ -266,9 +257,7 @@ def test_apply_rsds() -> None:
             n_subcells=1,
         )
 
-    with pytest.raises(
-        ValueError, match="field and distance must have the same number"
-    ):
+    with pytest.raises(ValueError, match="field and distance must have the same number"):
         cmt.apply_rsds(
             field=field,
             los_displacement=losv,
@@ -387,9 +376,7 @@ def test_vector_field_nonzero_origin() -> None:
 
     los = next(cmt.make_lightcone_slice_vector_field([[vx, vy, vz]], interpolator))
 
-    los_origin = next(
-        cmt.make_lightcone_slice_vector_field([[vx, vy, vz]], interpolator_origin)
-    )
+    los_origin = next(cmt.make_lightcone_slice_vector_field([[vx, vy, vz]], interpolator_origin))
 
     np.testing.assert_allclose(los, los_origin, atol=1e-6, rtol=1e-6)
 

@@ -6,7 +6,6 @@ import warnings
 
 import numpy as np
 
-
 try:
     from numba import njit
 

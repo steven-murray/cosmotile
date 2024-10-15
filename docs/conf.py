@@ -1,4 +1,5 @@
 """Sphinx configuration."""
+
 project = "Cosmotile"
 author = "Steven Murray"
 copyright = "2022, Steven Murray"
