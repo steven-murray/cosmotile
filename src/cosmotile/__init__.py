@@ -207,10 +207,10 @@ def make_lightcone_slice_vector_field(
 
     coord_norm = np.sqrt(np.sum(np.square(pixel_coords), axis=0))
 
-    def _doit(cvf):
+    def _doit(cvf: Sequence[np.ndarray]) -> np.ndarray:
         if len(cvf) != 3:
             raise ValueError(
-                "coeval_vector_fields must be a sequence of 3-tuples. Got length " f"{len(cvf)}"
+                f"coeval_vector_fields must be a sequence of 3-tuples. Got length {len(cvf)}"
             )
         if any(c.shape != cvf[0].shape for c in cvf):
             raise ValueError(
