@@ -170,9 +170,7 @@ def make_lightcone_slice(*, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs
         raise ValueError("all coevals must have the same shape")
 
     coordmap = make_lightcone_slice_interpolator(**kwargs)
-
-    for cv in coevals:
-        yield coordmap(cv)
+    return map(coordmap, coevals)
 
 
 def make_lightcone_slice_vector_field(
@@ -208,16 +206,16 @@ def make_lightcone_slice_vector_field(
         pixel_coords = pixel_coords - interpolator.origin[:, None]
 
     coord_norm = np.sqrt(np.sum(np.square(pixel_coords), axis=0))
-    for i, cvf in enumerate(coeval_vector_fields):
+
+    def _doit(cvf):
         if len(cvf) != 3:
             raise ValueError(
-                "coeval_vector_fields must be a sequence of 3-tuples. Got length "
-                f"{len(cvf)} at index {i}"
+                "coeval_vector_fields must be a sequence of 3-tuples. Got length " f"{len(cvf)}"
             )
         if any(c.shape != cvf[0].shape for c in cvf):
             raise ValueError(
-                f"all coeval vector fields must have the same shape. For index {i}, "
-                f"got shapes {[c.shape for c in cvf]}"
+                f"all coeval vector fields must have the same shape. "
+                f"Got shapes {[c.shape for c in cvf]}"
             )
         unit = getattr(cvf[0], "unit", 1)
         cvf_interp = np.array([interpolator(c) for c in cvf]) * unit
@@ -225,7 +223,9 @@ def make_lightcone_slice_vector_field(
         # Now take the dot product of the vector field with (negative) pixel coordinates to get
         # the LoS comp.
         cvf_interp *= -pixel_coords
-        yield np.sum(cvf_interp, axis=0) / coord_norm
+        return np.sum(cvf_interp, axis=0) / coord_norm
+
+    return map(_doit, coeval_vector_fields)
 
 
 def transform_to_pixel_coords(
