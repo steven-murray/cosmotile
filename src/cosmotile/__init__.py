@@ -2,26 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from functools import partial
-from typing import Any
-from typing import Callable
-from typing import Literal
+from typing import Any, Callable, Literal
 
 import numpy as np
 from astropy import units as un
-from astropy.cosmology import FLRW
-from astropy.cosmology import Planck18
+from astropy.cosmology import FLRW, Planck18
 from astropy_healpix import HEALPix
-from scipy.interpolate import RectBivariateSpline
-from scipy.interpolate import RegularGridInterpolator
+from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
 from scipy.ndimage import map_coordinates
 from scipy.spatial.transform import Rotation
 
 from . import _version
 from .cic import cloud_in_cell_los
-
 
 __version__ = _version.version
 
@@ -47,9 +41,7 @@ def get_distance_to_shell_from_redshift(
     distance
         The distance, in units of pixels, to the shell.
     """
-    return (cosmo.comoving_distance(z)).to(
-        un.pixel, un.pixel_scale(cell_size / un.pixel)
-    )
+    return (cosmo.comoving_distance(z)).to(un.pixel, un.pixel_scale(cell_size / un.pixel))
 
 
 def make_lightcone_slice_interpolator(
@@ -145,9 +137,7 @@ lightcone_slice
     return coordmap
 
 
-def make_lightcone_slice(
-    *, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs: Any
-) -> Generator:
+def make_lightcone_slice(*, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs: Any) -> Generator:
     """
     Create a lightcone slice in angular coordinates from two coeval simulations.
 
@@ -243,9 +233,7 @@ def transform_to_pixel_coords(
     comoving_radius: un.Quantity[un.pixel],
     latitude: np.ndarray,
     longitude: np.ndarray,
-    origin: (
-        un.Quantity[un.pixel, (3,), float] | tuple[float, float, float] | None
-    ) = None,
+    origin: (un.Quantity[un.pixel, (3,), float] | tuple[float, float, float] | None) = None,
     rotation: Rotation | None = None,
 ) -> np.ndarray:
     """Transform input spherical coordinates to pixel coordinates wrt a coeval box.
@@ -390,17 +378,17 @@ def apply_rsds(
 
     ang_coords = np.arange(field.shape[1])
     if is_regular:
-        X, Y = np.meshgrid(fine_grid, ang_coords, indexing="ij")
-        grid = (X.flatten(), Y.flatten())
+        x, y = np.meshgrid(fine_grid, ang_coords, indexing="ij")
+        grid = (x.flatten(), y.flatten())
         fine_field = interpolator(
             (distance, ang_coords), field, bounds_error=False, fill_value=None
-        )(grid).reshape(X.shape)
+        )(grid).reshape(x.shape)
         fine_rsd = interpolator(
             (distance, ang_coords),
             los_displacement / rsd_dx,
             bounds_error=False,
             fill_value=None,
-        )(grid).reshape(X.shape)
+        )(grid).reshape(x.shape)
     else:
         fine_field = interpolator(distance, ang_coords, field)(fine_grid, ang_coords)
         fine_rsd = interpolator(distance, ang_coords, los_displacement / rsd_dx)(
@@ -408,8 +396,11 @@ def apply_rsds(
         )
     fine_field = cloud_in_cell_los(fine_field, fine_rsd)
 
-    X, Y = np.meshgrid(distance, ang_coords, indexing="ij")
+    x, y = np.meshgrid(distance, ang_coords, indexing="ij")
 
     return RegularGridInterpolator((fine_grid, ang_coords), fine_field)(
-        (X.flatten(), Y.flatten())
-    ).reshape(X.shape)
+        (
+            x.flatten(),
+            y.flatten(),
+        )
+    ).reshape(x.shape)

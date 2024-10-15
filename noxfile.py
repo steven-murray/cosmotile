@@ -7,7 +7,6 @@ from pathlib import Path
 
 import nox
 
-
 package = "cosmotile"
 python_versions = ["3.12", "3.11", "3.10", "3.9"]
 nox.needs_version = ">= 2021.6.6"
@@ -49,9 +48,7 @@ def tests_nojit(session: nox.Session) -> None:
     session.install(".")
     session.install("coverage[toml]", "pytest", "pygments")
     try:
-        session.run(
-            "coverage", "run", "--parallel", "-m", "pytest", "-s", *session.posargs
-        )
+        session.run("coverage", "run", "--parallel", "-m", "pytest", "-s", *session.posargs)
     finally:
         if session.interactive:
             session.notify("coverage", posargs=[])
