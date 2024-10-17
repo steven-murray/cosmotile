@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Iterator, Sequence
 from functools import partial
 from typing import Any, Callable, Literal
 
@@ -137,7 +137,9 @@ lightcone_slice
     return coordmap
 
 
-def make_lightcone_slice(*, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs: Any) -> Generator:
+def make_lightcone_slice(
+    *, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs: Any
+) -> Iterator[np.ndarray]:
     """
     Create a lightcone slice in angular coordinates from two coeval simulations.
 
@@ -176,7 +178,7 @@ def make_lightcone_slice(*, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs
 def make_lightcone_slice_vector_field(
     coeval_vector_fields: Sequence[Sequence[np.ndarray]],
     interpolator: Callable[[np.ndarray], np.ndarray],
-) -> Generator:
+) -> Iterator[np.ndarray]:
     """
     Interpolate a 3D vector field to a lightcone slice as a line-of-sight component.
 
