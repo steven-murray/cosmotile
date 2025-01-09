@@ -181,12 +181,12 @@ def test_lightcone_slice_vector_field() -> None:
     """Test the make_lightcone_slice_vector_field function."""
     coeval = np.ones((10, 10, 10))
     distance_to_shell = 1.0 * un.pixel
-    lat = np.zeros(21)
+    lat = np.zeros(21, dtype=float)
     lon = np.linspace(0, 2 * np.pi, 21)
 
     # put points at the poles for testing
-    lat = np.append(lat, [np.pi / 2, -np.pi / 2])
-    lon = np.append(lon, [0, 0])
+    lat = np.append(lat, np.array([np.pi / 2, -np.pi / 2]))
+    lon = np.append(lon, np.array([0, 0]))
 
     # all displacement is in x-direction
     rsds = [

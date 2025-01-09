@@ -83,6 +83,8 @@ force_single_line = true
 lines_after_imports = 2
 
 [tool.mypy]
+# Ignore tests because we don't really care.
+exclude=['tests']
 strict = false
 warn_unreachable = true
 pretty = true
