@@ -87,8 +87,7 @@ def cloud_in_cell_coeval(
 
 
 def cloud_in_cell_los(
-    field: np.ndarray,
-    delta_los: np.ndarray,
+    field: np.ndarray, delta_los: np.ndarray, periodic: bool = False
 ) -> np.ndarray:
     """
     Interpolate in the line-of-sight direction using cloud-in-cell algorithm.
@@ -114,6 +113,8 @@ def cloud_in_cell_los(
         Displacement of each coordinate in the field along the LoS.
         The displacement must be in units of the regular grid size, i.e.
         ``v / H(z) / grid_resolution``. Same shape as ``field``.
+    periodic
+        Whether the field is periodic along the line-of-sight axis.
     """
     if not NUMBA:  # pragma: no cover
         warnings.warn("Install numba for a speedup of cloud_in_cell", stacklevel=2)
@@ -137,11 +138,16 @@ def cloud_in_cell_los(
         tx = ip - x
         ddx = 1 - tx
 
-        for jj in range(nangles):
-            if 0 <= i[jj] < nslice:
-                out[i[jj], jj] += tx[jj] * weight[jj]
-            if 0 <= ip[jj] < nslice:
-                out[ip[jj], jj] += ddx[jj] * weight[jj]
+        if not periodic:
+            for jj in range(nangles):
+                if 0 <= i[jj] < nslice:
+                    out[i[jj], jj] += tx[jj] * weight[jj]
+                if 0 <= ip[jj] < nslice:
+                    out[ip[jj], jj] += ddx[jj] * weight[jj]
+        else:
+            for jj in range(nangles):
+                out[i[jj] % nslice, jj] += tx[jj] * weight[jj]
+                out[ip[jj] % nslice, jj] += ddx[jj] * weight[jj]
     return out
 
 
