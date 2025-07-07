@@ -131,10 +131,7 @@ class TestCICLoS:
         box_in = rng.random((nangles, nslices))
         delta_los = np.zeros_like(box_in)
 
-        box_out = cic_los(
-            field=box_in,
-            delta_los=delta_los,
-        )
+        box_out = cic_los(field=box_in, delta_los=delta_los, periodic=periodic)
         assert np.allclose(box_out, box_in)
 
     def test_bad_inputs(self) -> None:
