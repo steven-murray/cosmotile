@@ -17,7 +17,7 @@ class TestCIC:
         dy = np.zeros_like(fld)
         dz = np.zeros_like(fld)
 
-        with pytest.raises(ValueError, match="Field and displacement must have the same shape."):
+        with pytest.raises(ValueError, match="Field and displacement must have the same shape"):
             cloud_in_cell(fld, dx, dy, dz[1:])
 
     def test_cic_single_nonzero_dx(self) -> None:
@@ -139,5 +139,5 @@ class TestCICLoS:
         field = np.zeros((10, 20))
         los = np.zeros((11, 20))
 
-        with pytest.raises(ValueError, match="Field and displacement must have the same shape."):
+        with pytest.raises(ValueError, match="Field and displacement must have the same shape"):
             cic_los(field, los)
