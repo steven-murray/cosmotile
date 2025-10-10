@@ -203,7 +203,7 @@ def test_lightcone_slice_vector_field() -> None:
 
     with pytest.raises(
         ValueError,
-        match="coeval_vector_fields must be a sequence of 3-tuples. Got length",
+        match=r"coeval_vector_fields must be a sequence of 3-tuples. Got length",
     ):
         next(
             cmt.make_lightcone_slice_vector_field(
@@ -212,7 +212,7 @@ def test_lightcone_slice_vector_field() -> None:
             )
         )
 
-    with pytest.raises(ValueError, match="all coeval vector fields must have the same shape."):
+    with pytest.raises(ValueError, match=r"all coeval vector fields must have the same shape."):
         next(
             cmt.make_lightcone_slice_vector_field(
                 interpolator=interpolator,
