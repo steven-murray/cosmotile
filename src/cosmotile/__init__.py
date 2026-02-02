@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
 from functools import partial
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import numpy as np
 from astropy import units as un
