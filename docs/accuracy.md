@@ -257,11 +257,42 @@ the interpolation.
   and you need sub-percent accuracy. On a field with power near Nyquist they buy little,
   because the information genuinely is not there.
 
-Orders above 1 also carry a real cost per shell. The spline pre-filter is applied to the
-whole coeval box on every call, so a lightcone of 100 shells filters the box 100 times —
-around 0.7 s each for a $256^3$ box, which dominates the interpolation itself. Budget for
-that before reaching past order 1; reusing a precomputed filter is tracked as
-[issue #466](https://github.com/steven-murray/cosmotile/issues/466).
+Orders above 1 also carry a real cost, but you only need to pay it once. By default the
+spline pre-filter is applied to the whole coeval box on every call, so a lightcone of 100
+shells filters the box 100 times — around 0.7 s each for a $256^3$ box, which dominates
+the 0.34 s of interpolation itself. The filtered box depends only on the box and the
+order, not on the shell radius, rotation or origin, so hoist it out of the loop with
+{func}`~cosmotile.prefilter_coeval`:
+
+```python
+filtered = cosmotile.prefilter_coeval(coeval, order=3)
+
+for radius in radii:
+    (shell,) = cosmotile.make_lightcone_slice(
+        coevals=filtered,
+        latitude=lat,
+        longitude=lon,
+        distance_to_shell=radius,
+        interpolation_order=3,
+    )
+```
+
+This is bit-identical to the default path — it only moves the work — and takes the
+$256^3$/`nside=256` example from 0.97 s per shell to 0.34 s, i.e. a 100-shell lightcone
+from 97 s to 34 s. Orders 0 and 1 need no filter, so they are unaffected either way.
+
+There is no flag to set and nothing to keep in sync: `prefilter_coeval` tags its output
+with the order it filtered for, and that tag — which nothing else can produce — is what
+tells the interpolator to skip the filter. A raw box is filtered as before, so the two
+paths cannot be mixed up. Nothing is cached between calls either, so a box you mutate in
+place can never yield a stale shell.
+
+The one thing you must get right is the order: a box filtered for order 3 and tiled at
+order 5 holds the wrong coefficients, and raises `ValueError` rather than returning a
+plausible-looking shell. The tag is deliberately dropped by slicing and arithmetic, since
+the pre-filter of a derived array is not the derived pre-filtered array — a derived box is
+therefore still correct, just filtered on its own account rather than hoisted, so re-run
+`prefilter_coeval` on it if you want the saving back.
 
 ### Choosing `nside`
 

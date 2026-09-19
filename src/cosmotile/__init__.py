@@ -45,6 +45,88 @@ def get_distance_to_shell_from_redshift(
     return (cosmo.comoving_distance(z)).to(un.pixel, un.pixel_scale(cell_size / un.pixel))
 
 
+class PrefilteredCoeval(np.ndarray):
+    """A coeval box to which the spline pre-filter has already been applied.
+
+    Instances are produced by :func:`prefilter_coeval`, and carry the spline order they
+    were filtered for in :attr:`spline_order`. That tag is the whole mechanism: it is
+    what tells :func:`make_lightcone_slice` to skip the filter it would otherwise apply,
+    and what lets it reject a box filtered for the wrong order.
+
+    The tag is deliberately not propagated through views, slices or arithmetic: any
+    array derived from a `PrefilteredCoeval` is a plain array again, because the
+    pre-filter of a derived array is not in general the derived pre-filtered array.
+    """
+
+    #: The interpolation order the box was pre-filtered for, or ``None`` if the tag was
+    #: dropped (e.g. on a slice or the result of an arithmetic operation).
+    spline_order: int | None = None
+
+    def __array_finalize__(self, obj: Any) -> None:
+        """Drop the pre-filter tag on any array derived from this one."""
+        self.spline_order = None
+
+
+def prefilter_coeval(coeval: np.ndarray, order: int) -> PrefilteredCoeval:
+    """Apply the spline pre-filter to a coeval box once, for re-use across many shells.
+
+    Interpolating at ``order >= 2`` requires the coeval box to be converted to B-spline
+    coefficients first (see :func:`_interpolate_coeval`). Those coefficients depend only
+    on the box and the order -- not on the shell radius, rotation or origin -- so for a
+    lightcone of many shells the filter need only be computed once.
+
+    .. code-block:: python
+
+        filtered = cosmotile.prefilter_coeval(coeval, order=3)
+        for radius in radii:
+            (shell,) = cosmotile.make_lightcone_slice(
+                coevals=filtered,
+                latitude=lat,
+                longitude=lon,
+                distance_to_shell=radius,
+                interpolation_order=3,
+            )
+
+    Parameters
+    ----------
+    coeval
+        The coeval box to pre-filter.
+    order
+        The interpolation order the box is being prepared for. Must be in the range 0-5,
+        and must match the ``interpolation_order`` it is later tiled with. Orders 0 and 1
+        use interpolating kernels and need no filter, so for them this only tags the box.
+
+    Returns
+    -------
+    prefiltered
+        The pre-filtered box, tagged with ``order``. Pass it to
+        :func:`make_lightcone_slice` (or :func:`make_lightcone_slice_interpolator`)
+        in place of the raw box; no further flag is needed, since the tag is what tells
+        the interpolator the filter has already been applied.
+
+    Notes
+    -----
+    The result of tiling a pre-filtered box is bit-identical to tiling the raw box at the
+    same order; this only moves the work out of the per-shell loop.
+
+    Mutating ``coeval`` after calling this does **not** update the returned array for
+    ``order > 1`` (it is a fresh array); re-run this function if the box changes.
+    """
+    if not isinstance(order, int):
+        raise TypeError("order must be an integer")
+
+    if order < 0 or order > 5:
+        raise ValueError("order must be in the range 0-5")
+
+    arr = np.asarray(coeval)
+    if order > 1:
+        arr = spline_filter(arr, order=order, mode="grid-wrap", output=np.float64)
+
+    out: PrefilteredCoeval = arr.view(PrefilteredCoeval)
+    out.spline_order = order
+    return out
+
+
 def _interpolate_coeval(coeval: np.ndarray, *, coordinates: np.ndarray, order: int) -> np.ndarray:
     """Interpolate a coeval box at the given (pixel) coordinates.
 
@@ -57,13 +139,24 @@ def _interpolate_coeval(coeval: np.ndarray, *, coordinates: np.ndarray, order: i
     Orders 0 and 1 use interpolating kernels and need no pre-filter, so they are
     passed straight through.
 
-    .. note:: The pre-filter runs once per call, so building a lightcone of many shells
-              from one coeval box re-filters that box for every shell. For a 256^3 box
-              that is around 0.7 s per shell at order 3, which dominates the cost of the
-              interpolation itself. Orders 0 and 1 are unaffected.
+    The filtered array depends only on ``(coeval, order)``, so when tiling one box onto
+    many shells it can be computed once with :func:`prefilter_coeval` instead of once per
+    shell. Such a box arrives here tagged with the order it was filtered for, and that tag
+    -- which only :func:`prefilter_coeval` can produce -- is what suppresses the filter
+    here. No flag is taken on trust and nothing is cached between calls, so this cannot
+    silently filter twice, nor silently reuse a stale filter for a box that has since been
+    mutated. A box tagged for a different order than it is being tiled at is an error.
     """
+    tagged_order = getattr(coeval, "spline_order", None)
+
+    if tagged_order is not None and tagged_order != order:
+        raise ValueError(
+            f"coeval was pre-filtered for order {tagged_order}, but is being "
+            f"interpolated at order {order}. Pre-filter at the order you will tile with."
+        )
+
     coeval = np.asarray(coeval)
-    if order > 1:
+    if order > 1 and tagged_order is None:
         coeval = spline_filter(coeval, order=order, mode="grid-wrap", output=np.float64)
 
     return map_coordinates(
@@ -180,7 +273,10 @@ def make_lightcone_slice(
         An iterable of rectangular coeval simulations to interpolate to the angular
         coordinates. Must have three dimensions (not necessarily the same size). Each
         box must have the same shape, and all are assumed to be at the same coordinates.
-        Each coeval box can be a different simulated field.
+        Each coeval box can be a different simulated field. If you are tiling the same
+        box onto many shells at ``interpolation_order >= 2``, pass boxes pre-filtered by
+        :func:`prefilter_coeval`, so that the spline pre-filter is computed once rather
+        than once per shell.
 
     Other Parameters
     ----------------
