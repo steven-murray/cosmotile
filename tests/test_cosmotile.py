@@ -51,11 +51,22 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(ValueError, match="n_radial_samples must be at least 1"):
         call(n_radial_samples=0)
 
-    with pytest.raises(ValueError, match="radial_width must be non-negative"):
-        call(n_radial_samples=2, radial_width=-1.0)
+    with pytest.raises(ValueError, match="coeval_cell_width must be non-negative"):
+        call(n_radial_samples=2, coeval_cell_width=-1.0)
+
+    with pytest.raises(ValueError, match="radial_width must be at least coeval_cell_width"):
+        call(n_radial_samples=2, radial_width=0.5)
 
     with pytest.raises(ValueError, match="radial_width must be less than twice"):
-        call(n_radial_samples=2, radial_width=3.0, distance_to_shell=1.0)
+        call(n_radial_samples=2, radial_width=3.0, coeval_cell_width=0.0, distance_to_shell=1.0)
+
+    with pytest.raises(ValueError, match="n_subcells must be a positive integer"):
+        cmt.apply_rsds(
+            field=np.ones((2, 4)),
+            los_displacement=np.zeros((2, 4)) * un.pixel,
+            distance=np.array([10.0, 11.0]) * un.pixel,
+            n_subcells=0,
+        )
 
     with pytest.raises(ValueError, match="width must be positive and less than two"):
         cmt.deconvolve_cell_window(coeval, width=2.0)

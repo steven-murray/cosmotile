@@ -236,34 +236,44 @@ def sightline_amplitude(box: np.ndarray, radius: float, **kwargs: object) -> flo
     return float(value / np.cos(WAVENUMBER * radius))
 
 
-@pytest.mark.parametrize("width", [1.0, 2.0, 3.0])
-def test_the_requested_window_is_delivered_convolved_with_the_cell_window(
-    width: float,
-) -> None:
-    """Asking for a radial top-hat ``Q`` on a cell-averaged box gives ``Q * T``, not ``Q``.
+@pytest.mark.parametrize("width", [1.5, 2.0, 3.0])
+def test_the_requested_window_is_what_the_output_carries(width: float) -> None:
+    """``radial_width`` is the total window wanted, and it is what comes out.
+
+    The cell window is always there, so a naive top-hat of ``width`` on top of it would
+    deliver the product of the two. The interpolator subtracts the box's own window
+    first, so what the caller asks for is what the caller gets -- on a cell-averaged box
+    and on a point-sampled one alike, given the right ``coeval_cell_width``.
 
     The radius is large enough that the ``r^2`` volume weighting is negligible (it
     perturbs the top-hat at order ``(w/r)^2``, tested separately in
-    ``test_pixel_averaging.py``), which isolates the composition being asserted here:
-    the output carries the product of both windows, and deconvolving first leaves
-    exactly the one that was requested.
+    ``test_pixel_averaging.py``), which isolates the window composition.
     """
     radius = 60.0
     samples, averaged = plane_wave_boxes()
     requested = float(np.sinc(WAVENUMBER * width / (2 * np.pi)))
-    averaging = {"radial_width": width, "n_radial_samples": 8}
 
+    for box, cell_width in ((averaged, 1.0), (samples, 0.0)):
+        np.testing.assert_allclose(
+            sightline_amplitude(
+                box,
+                radius,
+                radial_width=width,
+                coeval_cell_width=cell_width,
+                n_radial_samples=8,
+            ),
+            requested,
+            rtol=3e-3,
+        )
+
+    # Claiming the box has no cell window when it does gets you the product instead --
+    # which is exactly the double-count the correction exists to avoid.
     np.testing.assert_allclose(
-        sightline_amplitude(averaged, radius, **averaging), requested * CELL_WINDOW, rtol=1e-3
-    )
-    np.testing.assert_allclose(
-        sightline_amplitude(cmt.deconvolve_cell_window(averaged), radius, **averaging),
-        requested,
-        rtol=1e-3,
-    )
-    # And on a genuinely point-sampled box there is no cell window to compose with.
-    np.testing.assert_allclose(
-        sightline_amplitude(samples, radius, **averaging), requested, rtol=1e-3
+        sightline_amplitude(
+            averaged, radius, radial_width=width, coeval_cell_width=0.0, n_radial_samples=8
+        ),
+        requested * CELL_WINDOW,
+        rtol=3e-3,
     )
 
 
@@ -293,26 +303,47 @@ def test_residual_radial_width_composes_to_the_requested_window(target: float) -
 
 
 def test_residual_radial_width_is_zero_when_the_cell_already_supplies_it() -> None:
-    """A slice no coarser than a cell needs no extra averaging, and asking gives zero.
-
-    The zero is meant to be passed straight through, so it must also be accepted as a
-    ``radial_width`` and leave the output untouched.
-    """
+    """A window no wider than the cell needs no extra averaging, and asking gives zero."""
     assert cmt.residual_radial_width(0.5) == 0.0
     assert cmt.residual_radial_width(1.0) == 0.0
     assert cmt.residual_radial_width(2.0, cell_size=2.0) == 0.0
     assert cmt.residual_radial_width(2.0) == pytest.approx(np.sqrt(3.0))
 
+    # And the default window is exactly the one a cell-averaged box already carries, so
+    # the default call does no averaging and the output is the cell window itself.
     _, averaged = plane_wave_boxes()
-    sampled = sightline_amplitude(averaged, 60.0)
-
-    # The cell window alone is what a one-cell slice wanted in the first place.
-    np.testing.assert_allclose(sampled, CELL_WINDOW, rtol=1e-3)
+    np.testing.assert_allclose(sightline_amplitude(averaged, 60.0), CELL_WINDOW, rtol=1e-3)
     np.testing.assert_allclose(
-        sightline_amplitude(
-            averaged, 60.0, radial_width=cmt.residual_radial_width(1.0), n_radial_samples=8
-        ),
-        sampled,
+        sightline_amplitude(averaged, 60.0, radial_width=1.0, n_radial_samples=8),
+        sightline_amplitude(averaged, 60.0),
         rtol=0,
         atol=1e-14,
     )
+
+
+def test_recommended_subsample_level_hits_its_tolerance() -> None:
+    """The recommended level must actually deliver the accuracy it promises.
+
+    The error of the sub-pixel average is quadrature error over the pixel, so it scales
+    as the square of the sub-pixel arc and does *not* saturate once the sub-pixels reach
+    the cell size. The recommendation inverts that scaling; here it is checked to be
+    monotone in every argument and to give back a sub-pixel arc small enough for the
+    tolerance asked.
+    """
+    # Finer pixels need less help; more distant shells and tighter tolerances need more.
+    assert cmt.recommended_subsample_level(256, 80.0) < cmt.recommended_subsample_level(16, 80.0)
+    assert cmt.recommended_subsample_level(32, 40.0) < cmt.recommended_subsample_level(32, 400.0)
+    assert cmt.recommended_subsample_level(
+        32, 80.0, tolerance=0.1
+    ) < cmt.recommended_subsample_level(32, 80.0, tolerance=1e-4)
+
+    for nside, radius, tolerance in ((32, 80.0, 0.01), (64, 200.0, 0.01), (16, 50.0, 0.001)):
+        level = cmt.recommended_subsample_level(nside, radius, tolerance=tolerance)
+        arc = 0.52 * radius / nside / 2**level
+        assert 0.15 * arc**2 <= tolerance, f"arc {arc:.3f} too coarse for {tolerance}"
+
+    # A pixel already far smaller than a cell needs no sub-sampling at all.
+    assert cmt.recommended_subsample_level(1024, 10.0) == 0
+
+    with pytest.raises(ValueError, match="must all be positive"):
+        cmt.recommended_subsample_level(32, -1.0)

@@ -55,15 +55,13 @@ g_{\mathbf n} = (T \ast f)(\mathbf x_{\mathbf n}),
 $$
 
 That single number is *simultaneously* "the cell average of $f$" and "a point sample of
-the smoothed field $s = T \ast f$". The two readings are the same arithmetic, which is
-why `cosmotile` has no switch for them. What it does have is a chain of windows. The
-value on the shell is
+the smoothed field $s = T \ast f$". The value on the shell is
 
 $$
 Q \ast \Lambda \ast T \ast f
 $$
 
-evaluated at the pixel, and every factor has an owner:
+evaluated at the pixel. In detail:
 
 | Factor | What it is | Who supplies it |
 |---|---|---|
@@ -71,12 +69,11 @@ evaluated at the pixel, and every factor has an owner:
 | $\Lambda$ | the **reconstruction kernel** | `interpolation_order` |
 | $Q$ | the **output window** | nothing by default; `subsample_level` and/or `radial_width` |
 
-**$T$ never leaves on its own.** It is in the numbers you were handed, so it is in
-everything `cosmotile` gives back. Two consequences bite in practice.
+The cell window function, **$T$**, remains embedded in the interpolated lightcone slices
+that `cosmotile` computes. This has two major consequences:
 
-*First*, `interpolation_order` converges on $s$, never on $f$. Reconstruction is about
-recovering a continuous field from grid values; it has no way to know those values were
-averaged, and no order removes the averaging.
+*First*, increasing `interpolation_order` converges on $s$, not $f$. That is, improving
+the interpolation does not remove the cell-size averaging of the input simulation.
 
 ```{figure} figures/cell_window.svg
 :alt: Interpolation error against wavenumber for spline orders 1 to 5, before and after deconvolution
@@ -88,34 +85,50 @@ residual against the underlying one is the cell window. On the right the same bo
 `deconvolve_cell_window`, where the order ladder separates by orders of magnitude again.
 ```
 
-*Second*, an output window you request is delivered **convolved with $T$**, not on its
-own. Along the line of sight, with cell size $\Delta$ and a requested radial top-hat of
-width $\Delta r$, what you get is $\mathrm{sinc}(k\Delta r/2)\,\mathrm{sinc}(k\Delta/2)$.
-At $\Delta r = \Delta$ that is *twice* the smoothing you asked for:
+*Second*, any output window you request stacks *on top of* $T$ rather than replacing it.
+Naively applying a radial top-hat of the slice spacing $\Delta r$ would deliver
+$\mathrm{sinc}(k\Delta r/2)\,\mathrm{sinc}(k\Delta/2)$ — at $\Delta r = \Delta$, twice the
+smoothing you asked for:
 
 | $k_\parallel$ / slice Nyquist | 0.25 | 0.50 | 0.75 | 1.00 |
 |---|---|---|---|---|
-| power delivered / power requested | 0.950 | 0.811 | 0.615 | 0.405 |
+| power delivered / power naively requested | 0.950 | 0.811 | 0.615 | 0.405 |
 
-{func}`~cosmotile.residual_radial_width` exists to correct exactly this — see "Radial
-averaging" below.
+So `radial_width` is the **total** window you want, not an extra one to pile on:
+`cosmotile` subtracts what the box already has (`coeval_cell_width`, one cell by default)
+and applies only the remainder. Its default of 1.0 is therefore a no-op, and a value
+below one cell is an error. See "Radial averaging" below.
 
-### Which field do you want?
+### Output resolution is the coarser of the two
 
-- **$s$, the field at the simulation's own resolution.** Almost always the honest answer,
-  and the default: do nothing. The cell window is part of what your simulation resolved.
-- **$f$, the underlying field.** Apply {func}`~cosmotile.deconvolve_cell_window` to the
-  box once, before the shell loop. It divides $\tilde T$ out exactly for a periodic field
-  band-limited to the grid Nyquist. Then, and only then, does a requested $Q$ arrive
-  unaccompanied.
+The short version of all this:
 
-Deconvolution is not free: it sharpens structure the simulation never resolved and
-amplifies whatever aliased power and noise sit near Nyquist, by $1/\tilde T$ — a factor of
-3.9 at the Nyquist corner of a 3D grid, and about 1.6 in RMS on a white-noise box. Reach
-for it when you need a lightcone whose window is exactly something you have specified, for
+1. **The output already contains the input simulation's smoothing.** You cannot get a
+   lightcone of higher resolution than the box it came from — no interpolation order, no
+   sub-sampling, nothing but a deconvolution will recover scales the simulation averaged
+   away.
+2. **The output resolution is usually not the input resolution.** In the angular
+   direction it is whatever you choose — `nside`, or your own coordinates — and in the
+   radial direction it is unspecified unless you say. Neither is tied to the cell size.
+
+Put together: **the smoothing scale of a `cosmotile` output is the coarser of the input
+and output resolutions.** Asking for output cells finer than the input buys you nothing
+but interpolation; asking for coarser ones does real averaging, and the window you get is
+the one you asked for.
+
+### If you really do want $f$
+
+{func}`~cosmotile.deconvolve_cell_window`, applied to the box once before the shell loop,
+divides $\tilde T$ out — exactly, for a periodic field band-limited to the grid Nyquist.
+Then set `coeval_cell_width=0`, and the output carries only the window you requested.
+
+It is not free: it sharpens structure the simulation never resolved and amplifies
+whatever aliased power and noise sit near Nyquist, by $1/\tilde T$ — a factor of 3.9 at
+the Nyquist corner of a 3D grid, and about 1.6 in RMS on a white-noise box. Reach for it
+when you need a lightcone whose window is exactly something you have specified, for
 instance to compare a line-of-sight power spectrum against $P(k)$ times a known channel
-response. If your box genuinely holds point samples, skip all of this: $T$ is the identity
-and there is nothing to remove.
+response. If your box genuinely holds point samples, there is nothing to remove: just
+pass `coeval_cell_width=0`.
 
 {func}`~cosmotile.cell_window` returns $\tilde T$ on a grid's own modes, if you would
 rather put it into your theory prediction than take it out of your data.
@@ -281,8 +294,8 @@ need lower multipoles you need a bigger box.
 
 ### The interpolation kernel
 
-Tiling reconstructs a continuous field from the grid values, and the reconstruction
-kernel suppresses power. This is the $\Lambda$ of the window chain above, and it is
+Interpolation reconstructs a continuous field from the grid values, and the
+reconstruction kernel suppresses power. This is the $\Lambda$ of the window chain above, and it is
 separate from — and multiplies — whatever cell window the box already carries. For the
 default trilinear interpolation (`interpolation_order=1`), the kernel is the triangle
 function, whose Fourier response is
@@ -401,7 +414,7 @@ therefore still correct, just filtered on its own account rather than hoisted, s
 
 By default a lightcone value is a **point sample** of the reconstructed field at the
 pixel centre. Such a map carries the input box's cell window, but not the HEALPix pixel
-window, and the difference has teeth: you must **not** divide $w_\ell$ out of it, and
+window: you must **not** divide $w_\ell$ out of it, and
 power above $\ell \sim 2 N_{\rm side}$ does not vanish but aliases back down.
 
 Passing `subsample_level=k` to {func}`~cosmotile.make_healpix_lightcone_slice` instead
@@ -427,8 +440,39 @@ What that buys you:
 - **Less aliasing.** The spurious floor above the spectral cut-off (above) drops by
   roughly a factor of four at $k=2$ — the part of it that was sub-pixel structure folded
   down by sampling, as distinct from the part the interpolation genuinely puts there.
-- **Cost.** $4^k$ interpolations per pixel. $k=2$ is usually the sweet spot; $k=1$ is
-  visibly short of the exact pixel average.
+- **Cost.** $4^k$ interpolations per pixel.
+
+### Choosing $k$
+
+The sub-pixel mean is a quadrature rule for the mean over the pixel, so its error is set
+by how finely the sub-pixels sample the scale the field varies on — the cell size.
+Measured against the exact pixel average, with the sub-pixel arc in cells:
+
+| sub-pixel arc / $\Delta$ | 0.65 | 0.33 | 0.16 | 0.08 |
+|---|---|---|---|---|
+| error on $C_\ell$ | 6% | 1.3% | 0.3% | 0.08% |
+
+It falls as the square of the arc, and — perhaps surprisingly — it does **not** saturate
+once the sub-pixels are smaller than a cell. This is quadrature error, not a sampling
+limit: the reconstructed field is smooth rather than structureless below a cell, so a
+finer rule keeps paying. A sub-pixel arc of about a quarter of a cell is needed for 1%,
+not one cell.
+
+A HEALPix pixel subtends roughly $0.52/N_{\rm side}$ radians, so that works out at
+$k \approx \log_2\!\left(2r / N_{\rm side}\Delta\right)$.
+{func}`~cosmotile.recommended_subsample_level` does this for you:
+
+```python
+k = cosmotile.recommended_subsample_level(nside, radius, tolerance=0.01)
+```
+
+The default stays $k = 0$, so averaging never happens unless you ask.
+
+A large $k$ is itself a diagnostic. Cost grows as $4^k$, so needing more than two or
+three means the pixel spans many cells — that is, `nside` is below the
+$N_{\rm side} \gtrsim r/2\Delta$ of the previous section and you are discarding
+resolution the box has. Raise `nside` instead; it is cheaper and you get the small
+scales back.
 
 Averaging does not remove the need to choose `nside` sensibly. A good rule is still to
 make the pixel scale comparable to the cell size projected onto the shell,
@@ -444,43 +488,58 @@ whether or not it is aliased.
 ### Radial averaging
 
 The same argument applies along the line of sight: a lightcone shell has the thickness
-of the slice spacing, not zero. {func}`~cosmotile.make_lightcone_slice` takes
-`radial_width` (in cells) and `n_radial_samples`, and averages the field over
-$[r - w/2,\, r + w/2]$ with Gauss–Legendre nodes weighted by the $r^2$ volume element —
-the weighting is always applied, since it is what makes the result the mean over a shell
-of that thickness. Four nodes already integrate it exactly for anything the box can
-resolve.
-
-A radial mode $k$ is then suppressed by the top-hat transform $\mathrm{sinc}(kw/2)$,
-with a correction of order $(w/r)^2$ from the volume weighting.
-
-**`radial_width` is not the slice spacing.** This is the trap. Your box already carries
-a cell window worth about one cell of radial smoothing — the cubic cell window is within
-3% of isotropic even at Nyquist, so along any sight-line it acts as a radial top-hat of
-one cell. Requesting the full slice spacing on top of it double-counts, by the factors in
-the table above. Ask {func}`~cosmotile.residual_radial_width` for what to pass instead:
+of the slice spacing, not zero. Pass `radial_width` — the **total** window you want, in
+cells, which is the slice spacing or the width of a frequency channel — together with
+`n_radial_samples`:
 
 ```python
-width = cosmotile.residual_radial_width(slice_spacing)  # sqrt(dr^2 - cell^2)
+(shell,) = cosmotile.make_healpix_lightcone_slice(
+    nside=nside,
+    coevals=box,
+    distance_to_shell=radius,
+    radial_width=slice_spacing,
+    n_radial_samples=4,
+)
 ```
 
-Both windows expand as $1 - k^2x^2/24$, so their widths add in quadrature to leading
-order, and that rule reproduces the window you wanted to better than 2.5% out to its own
-Nyquist — against up to 36% for the naive choice. It returns **zero** when the slice is
-no coarser than a cell, meaning "you already have it, request nothing"; pass the zero
-straight through and no radial averaging is done. So `radial_width` earns its keep when
-your slices are *coarser* than your cells — a 21 cm frequency channel spanning several
-of them, say.
+`cosmotile` subtracts what the box already carries and applies only the remainder. Your
+box supplies about one cell of radial smoothing (the cubic cell window is within 3% of
+isotropic even at Nyquist, so along any sight-line it acts as a radial top-hat of one
+cell), so the extra top-hat applied is $\sqrt{\Delta r^2 - \Delta^2}$: widths add in
+quadrature to leading order, since both windows expand as $1 - k^2x^2/24$. That
+reproduces the window you asked for to better than 2.5% out to its own Nyquist, against
+up to 36% if the full $\Delta r$ were applied on top. The arithmetic is
+{func}`~cosmotile.residual_radial_width` if you want it directly.
 
-If you want the requested window and nothing else, deconvolve the cell window from the
-box first; see "What a cell holds, and what comes out".
+The consequences of that convention are worth stating plainly:
+
+- **`radial_width=1.0` is the default and does nothing** — one cell is what you already
+  have.
+- **`radial_width` below `coeval_cell_width` is an error.** Averaging cannot sharpen.
+- **If your box holds point samples**, or you have run
+  {func}`~cosmotile.deconvolve_cell_window` on it, pass `coeval_cell_width=0` so the full
+  width is applied.
+
+The averaging is real: the Gauss–Legendre nodes interpolate the coeval box at their own
+radii and those values are combined, so a window spanning several cells genuinely
+averages several cells of your simulation. The weights carry the $r^2$ volume element,
+always — it is what makes the result the mean over a shell of that thickness. Four nodes
+integrate the window exactly for anything a cell-scale field can hold; a window spanning
+many cells of a field with power near Nyquist wants roughly $n \gtrsim \pi w / 2$.
+
+A radial mode $k$ is then suppressed by the top-hat transform $\mathrm{sinc}(k\Delta r/2)$,
+with a correction of order $(\Delta r/r)^2$ from the volume weighting.
 
 Averaging radially turns the slice into a projection with a normalised radial kernel
 $q(r)$ — the $q$ of "Why not Limber?" above — so the thin-shell $C_\ell$ no longer
 describes it: $j_\ell^2(kr)$ must be replaced by
-$\left|\int \mathrm{d}r \, q(r) \, j_\ell(kr)\right|^2$. One slice is far too narrow a
-kernel for Limber to apply, but the prediction to compare against does change, so do not
-average radially and then check against the thin-shell formula.
+$\left|\int \mathrm{d}r \, q(r) \, j_\ell(kr)\right|^2$. This does **not** bring Limber
+back: Limber needs the radial kernel to be wide compared with the oscillation scale of
+$j_\ell$, i.e. $\Delta r \gg r/\ell$, which for a one-cell slice at $r = 80$ cells means
+$\ell \gg 80$. A single slice is nowhere near that however it is averaged; stack many
+into a genuine projection and Limber applies in the usual way. What the radial average
+*does* change is the prediction, so do not average radially and then check against the
+thin-shell formula.
 
 Both defaults (`subsample_level=0`, `n_radial_samples=1`) reproduce point sampling
 exactly, so nothing changes unless you ask for it — but "point sampling" always means

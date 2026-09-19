@@ -109,30 +109,37 @@ really covers, pass `subsample_level` (angular) and `radial_width` with
 `n_radial_samples` (radial):
 
 ```python
+radius = 100.0
 slice_spacing = 5.0  # cells between neighbouring shells
 
 (shell,) = cosmotile.make_healpix_lightcone_slice(
     nside=nside,
-    subsample_level=2,  # average over the 4**2 sub-pixels of nside * 2**2
+    subsample_level=cosmotile.recommended_subsample_level(nside, radius),
     coevals=box,
-    distance_to_shell=100.0,
-    radial_width=cosmotile.residual_radial_width(slice_spacing),
+    distance_to_shell=radius,
+    radial_width=slice_spacing,
     n_radial_samples=4,
 )
 ```
 
-Note the `radial_width`: it is **not** the slice spacing. Your box already carries about
-one cell of radial smoothing, so asking for the full spacing on top double-counts;
-{func}`~cosmotile.residual_radial_width` returns what is actually left to apply, and
-returns zero (a no-op) when the cell window already supplies it.
+`radial_width` is the **total** radial window you want, not an extra one to pile on: your
+box already carries about one cell of radial smoothing, and `cosmotile` subtracts that
+before applying the remainder. So the default of `1.0` does nothing, a value below one
+cell is an error (averaging cannot sharpen), and if your box holds point samples — or you
+have run {func}`~cosmotile.deconvolve_cell_window` on it — pass `coeval_cell_width=0` so
+the full width is applied.
+
+`subsample_level=k` averages over the `4**k` sub-pixels of an `nside * 2**k` map;
+{func}`~cosmotile.recommended_subsample_level` picks `k` for a wanted accuracy, since the
+error falls as the square of the sub-pixel arc.
 
 This costs `4**subsample_level * n_radial_samples` interpolations per pixel, and it makes
 the output a genuinely pixelised map — so the HEALPix pixel window then applies to its
 angular power spectrum, whereas on a sampled map it must not be divided out. Both
 defaults reproduce point sampling exactly.
 
-If you need the output to carry *only* the window you asked for, remove the box's own
-cell window once, before the shell loop:
+If you need the output free of the input's cell window altogether — rather than merely
+accounted for — remove it once, before the shell loop, and say so:
 
 ```python
 sharpened = cosmotile.deconvolve_cell_window(box)

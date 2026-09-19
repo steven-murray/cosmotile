@@ -216,30 +216,28 @@ def deconvolve_cell_window(coeval: np.ndarray, width: float = 1.0) -> np.ndarray
     )
 
 
-def residual_radial_width(slice_width: float, cell_size: float = 1.0) -> float:
-    r"""Return the ``radial_width`` to request for a given output radial window.
+def residual_radial_width(target_width: float, cell_size: float = 1.0) -> float:
+    r"""Return the extra radial top-hat needed to reach a given total window.
 
-    A lightcone slice usually wants to be the mean of the field over a radial top-hat of
-    ``slice_width`` -- the slice spacing, or the width of a frequency channel. But a
-    cell-averaged box already contributes a top-hat of one cell along the line of sight,
-    so asking for the full ``slice_width`` on top of it double-counts: the delivered
-    window is the product ``sinc(k w / 2) sinc(k D / 2)``, not ``sinc(k w / 2)`` alone.
-
-    Both windows expand as ``1 - k^2 x^2 / 24``, so their widths add in quadrature to
-    leading order and the residual width to request is
+    A cell-averaged box already carries a top-hat of one cell along the line of sight,
+    so averaging over the full ``target_width`` on top of it double-counts: the
+    delivered window would be the product ``sinc(k w / 2) sinc(k D / 2)``, not
+    ``sinc(k w / 2)`` alone. Both expand as ``1 - k^2 x^2 / 24``, so their widths add in
+    quadrature to leading order and the extra width to apply is
 
     .. math:: w = \sqrt{\max(\Delta r^2 - \Delta^2,\; 0)}.
 
-    That reproduces the requested window to better than 2.5% out to its own Nyquist for
-    any ratio of the two widths, against up to 36% for the naive ``w = slice_width``.
+    That reproduces the wanted window to better than 2.5% out to its own Nyquist for any
+    ratio of the two widths, against up to 36% for applying ``target_width`` directly.
 
-    A return value of zero means the cell window *is* the window you wanted, so request
-    no radial averaging at all -- which is what happens if you pass the zero straight
-    through to :func:`make_lightcone_slice_interpolator`.
+    :func:`make_lightcone_slice_interpolator` does this for you -- its ``radial_width``
+    is the total window you want, and it subtracts ``coeval_cell_width`` itself. This
+    function is the arithmetic behind that, exposed for anyone reasoning about windows
+    on their own.
 
     Parameters
     ----------
-    slice_width
+    target_width
         Width of the radial top-hat you want the output to carry, in cells.
     cell_size
         Width of the cell top-hat already present in the box, in cells. One by default;
@@ -248,12 +246,66 @@ def residual_radial_width(slice_width: float, cell_size: float = 1.0) -> float:
     Returns
     -------
     width
-        The value to pass as ``radial_width``. Zero when the box already supplies enough.
+        The extra top-hat to apply. Zero when the box already supplies enough.
     """
-    if slice_width < 0 or cell_size < 0:
-        raise ValueError("slice_width and cell_size must be non-negative")
+    if target_width < 0 or cell_size < 0:
+        raise ValueError("target_width and cell_size must be non-negative")
 
-    return float(np.sqrt(max(slice_width**2 - cell_size**2, 0.0)))
+    return float(np.sqrt(max(target_width**2 - cell_size**2, 0.0)))
+
+
+def recommended_subsample_level(
+    nside: int,
+    distance_to_shell: float,
+    cell_size: float = 1.0,
+    tolerance: float = 0.01,
+) -> int:
+    r"""Choose ``subsample_level`` for a wanted accuracy on the pixel average.
+
+    Averaging over ``4**k`` sub-pixels is a quadrature rule for the mean of the field
+    over the pixel, so its error is set by how finely the sub-pixels sample the scale on
+    which the field varies -- the cell size. Empirically the fractional error on the
+    angular power is about ``0.15 (a / D)^2`` for a sub-pixel arc ``a`` and cell size
+    ``D``, which inverts to the ``k`` returned here.
+
+    Note that this does *not* saturate once the sub-pixels reach the cell size. The
+    reconstructed field is smooth, not structureless below a cell, so a finer rule keeps
+    paying: measured errors run 6% at a sub-pixel arc of 0.65 cells, 1.3% at 0.33 and
+    0.3% at 0.16.
+
+    Parameters
+    ----------
+    nside
+        The Nside parameter of the healpix map.
+    distance_to_shell
+        Shell radius, in cells -- a HEALPix pixel subtends roughly ``0.52 / nside``
+        radians, so its arc is about ``0.52 r / nside`` cells.
+    cell_size
+        Cell size of the coeval box, in cells. One by default.
+    tolerance
+        Wanted fractional accuracy on the pixel average.
+
+    Returns
+    -------
+    level
+        The ``subsample_level`` to pass to :func:`make_healpix_lightcone_slice`. Zero
+        when the pixel is already small enough that its centre is a good enough
+        estimate of its mean.
+
+    Notes
+    -----
+    A large answer is telling you something: cost grows as ``4**level``, and needing
+    more than two or three means the pixel is many cells across, i.e. ``nside`` is too
+    coarse to resolve the box at this radius in the first place. Raising ``nside`` is
+    then both cheaper and more useful than averaging a huge pixel very accurately.
+    """
+    if nside < 1 or distance_to_shell <= 0 or cell_size <= 0 or tolerance <= 0:
+        raise ValueError("nside, distance_to_shell, cell_size and tolerance must all be positive")
+
+    arc = 0.52 * distance_to_shell / nside
+    # error ~ 0.15 (arc / 2**k / cell)^2  =  tolerance
+    needed = arc / cell_size * np.sqrt(0.15 / tolerance)
+    return max(0, int(np.ceil(np.log2(needed))))
 
 
 def _average_subsamples(values: np.ndarray, weights: np.ndarray | None) -> np.ndarray:
@@ -332,10 +384,9 @@ def _radial_quadrature(
     Averages the field over ``[r - w/2, r + w/2]``, weighted by the ``r^2`` volume
     element, which is the mean over a shell of that thickness.
 
-    A single node, or a zero width, returns the shell radius itself with unit weight --
-    the point-sampling behaviour. :func:`residual_radial_width` returns zero whenever the
-    box's own cell window already supplies the wanted radial average, so that value is
-    meant to pass straight through to here.
+    ``radial_width`` here is the *extra* top-hat to apply, i.e. what
+    :func:`residual_radial_width` returns; a single node, or a zero width, returns the
+    shell radius itself with unit weight, which is the point-sampling behaviour.
     """
     if n_radial_samples == 1 or radial_width == 0:
         return [distance_to_shell], np.ones(1)
@@ -354,7 +405,8 @@ def make_lightcone_slice_interpolator(
     interpolation_order: int = 1,
     origin: np.ndarray | tuple[float, float, float] | None = None,
     rotation: Rotation | None = None,
-    radial_width: float = 0.0,
+    radial_width: float = 1.0,
+    coeval_cell_width: float = 1.0,
     n_radial_samples: int = 1,
 ) -> partial[np.ndarray]:
     """
@@ -376,9 +428,9 @@ def make_lightcone_slice_interpolator(
     * ``Q`` is the output window: nothing by default, the sub-samples given in
       ``latitude`` and/or a radial top-hat of ``radial_width`` if you ask.
 
-    Because ``T`` never leaves, a requested ``Q`` is delivered convolved with it. See
-    :func:`residual_radial_width`, and "What a cell holds, and what comes out" in the
-    accuracy documentation.
+    Because ``T`` never leaves, ``radial_width`` is the *total* window you want and only
+    the remainder is applied on top of the box's own. See "What a cell holds, and what
+    comes out" in the accuracy documentation.
 
     Parameters
     ----------
@@ -407,17 +459,35 @@ def make_lightcone_slice_interpolator(
         This is done before shifting the origin, and is equivalent to rotating the
         coeval box beforing tiling it.
     radial_width
-        Width of the radial top-hat to average over, in units of the cell size. This is
-        *not* simply the slice spacing: the box's own cell window already contributes
-        about one cell of radial smoothing, so pass
-        ``residual_radial_width(slice_spacing)`` rather than the spacing itself. Zero
-        (the default) requests no radial averaging. Only used when
-        ``n_radial_samples > 1``.
+        The **total** radial top-hat you want the output to carry, in units of the cell
+        size -- in a lightcone, the slice spacing or the width of a frequency channel.
+
+        The box already supplies ``coeval_cell_width`` of radial smoothing, so only the
+        remainder is applied here: the extra top-hat is
+        ``sqrt(radial_width**2 - coeval_cell_width**2)``, since top-hat widths add in
+        quadrature to leading order (:func:`residual_radial_width`). The default of 1.0
+        is therefore a no-op on a cell-averaged box -- you already have a one-cell
+        window. Values below ``coeval_cell_width`` are rejected: averaging cannot
+        sharpen, and no lightcone can resolve better than the box it came from.
+
+        Only used when ``n_radial_samples > 1``.
+    coeval_cell_width
+        The radial top-hat the input box already carries, in units of the cell size. One
+        by default, since a simulation cell holds the mean over that cell. Pass ``0.0``
+        if your box genuinely holds point samples, or if you have removed the cell window
+        with :func:`deconvolve_cell_window`.
     n_radial_samples
-        The number of Gauss-Legendre nodes used to average the field over
-        ``radial_width``, weighted by the ``r^2`` volume element -- the volume element is
-        always applied, since it is what makes the result the mean over the shell. The
-        default of 1 samples the shell radius itself.
+        The number of Gauss-Legendre nodes used to average over the extra width, weighted
+        by the ``r^2`` volume element -- the volume element is always applied, since it is
+        what makes the result the mean over the shell. The default of 1 samples the shell
+        radius itself and does no averaging at all.
+
+        The nodes interpolate the coeval box at their own radii, so this genuinely
+        averages the input cells that fall in the window rather than rescaling by a
+        window function. Gauss-Legendre with ``n`` nodes integrates polynomials of degree
+        ``2n - 1`` exactly, so a window spanning many cells of a field with power near
+        Nyquist needs roughly ``n >= pi * width / 2`` nodes; four is ample for a window
+        of a cell or two.
 
     Returns
     -------
@@ -443,10 +513,18 @@ def make_lightcone_slice_interpolator(
     if n_radial_samples < 1:
         raise ValueError("n_radial_samples must be at least 1")
 
-    if radial_width < 0:
-        raise ValueError("radial_width must be non-negative")
+    if coeval_cell_width < 0:
+        raise ValueError("coeval_cell_width must be non-negative")
 
-    if radial_width >= 2 * distance_to_shell:
+    if radial_width < coeval_cell_width:
+        raise ValueError(
+            "radial_width must be at least coeval_cell_width: averaging cannot sharpen, "
+            "so the output cannot carry a narrower window than the box it came from"
+        )
+
+    extra_width = residual_radial_width(radial_width, coeval_cell_width)
+
+    if extra_width >= 2 * distance_to_shell:
         raise ValueError("radial_width must be less than twice distance_to_shell")
 
     if isinstance(origin, (tuple, list)):
@@ -456,7 +534,7 @@ def make_lightcone_slice_interpolator(
         raise ValueError("origin must be a sequence of length 3")
 
     n_angular_samples = latitude.shape[0] if latitude.ndim == 2 else 1
-    radii, radial_weights = _radial_quadrature(distance_to_shell, radial_width, n_radial_samples)
+    radii, radial_weights = _radial_quadrature(distance_to_shell, extra_width, n_radial_samples)
 
     # Sub-samples are laid out radial-major, then angular, then pixel, so that the
     # weights are simply the outer product of the two sets.
@@ -786,44 +864,38 @@ def _slice_edges(distance: np.ndarray) -> np.ndarray:
     return np.concatenate(([2 * distance[0] - mid[0]], mid, [2 * distance[-1] - mid[-1]]))
 
 
-def _average_over_cells(
-    fine_field: np.ndarray, fine_lo: float, fine_dx: float, edges: np.ndarray
-) -> np.ndarray:
-    """Average a piecewise-constant radial field over a coarser set of cells.
+def _rebin(values: np.ndarray, src_edges: np.ndarray, dst_edges: np.ndarray) -> np.ndarray:
+    """Re-average a piecewise-constant radial field onto a different set of cells.
 
-    ``fine_field`` holds the mean value of the field in each of a contiguous set of
-    cells of width ``fine_dx``, the first of which starts at ``fine_lo``. The result is
-    the mean of that same field over the cells delimited by ``edges``, computed exactly
-    by differencing the cumulative integral -- which is piecewise linear, so
-    interpolating it linearly is not an approximation.
+    ``values`` holds the mean of the field in each cell delimited by ``src_edges``; the
+    result is its mean over the cells delimited by ``dst_edges``. Computed exactly, by
+    differencing the cumulative integral -- which is piecewise linear, so interpolating
+    it linearly is not an approximation.
 
-    This is the step that makes the sub-cell refinement in :func:`apply_rsds` a genuine
-    convergence parameter: *sampling* the fine grid at the output slice centres throws
-    away everything that landed between them, whereas integrating over the output cell
-    keeps all of it.
+    Going *down* in resolution this is the step that makes the sub-cell refinement in
+    :func:`apply_rsds` a genuine convergence parameter: *sampling* the fine grid at the
+    output slice centres throws away everything that landed between them, whereas
+    integrating over the output cell keeps all of it. Going *up*, it is how the coarse
+    slices are refined in the first place. Since ``apply_rsds`` builds a fine grid every
+    one of whose edges includes the coarse edges, the two are exact inverses and a zero
+    displacement is an exact round trip.
     """
-    nfine = fine_field.shape[0]
+    widths = np.diff(src_edges)
 
-    # Cumulative integral of the field up to each fine-cell edge.
+    # Cumulative integral of the field up to each source edge.
     cumulative = np.concatenate(
-        (np.zeros((1, fine_field.shape[1])), np.cumsum(fine_field, axis=0) * fine_dx)
+        (np.zeros((1, values.shape[1])), np.cumsum(values * widths[:, None], axis=0))
     )
 
-    # Position of each output edge in units of fine cells. The fine grid is built so
-    # that output edges fall on fine-cell edges whenever the output grid is regular;
-    # snapping to the integer recovers that exactly in the face of round-off, which is
-    # what makes a zero displacement an exact round trip.
-    position = (edges - fine_lo) / fine_dx
-    whole = np.round(position)
-    position = np.clip(np.where(np.abs(position - whole) < 1e-8, whole, position), 0.0, nfine)
-
-    # Split into the index of the fine cell each edge falls in, and the fraction of the
-    # way across that cell.
-    index = np.clip(position.astype(np.int64), 0, nfine - 1)
-    frac = position - index
+    # Locate each destination edge in the source grid: which source cell it falls in,
+    # and how far across it. Destination edges that coincide with a source edge land
+    # exactly on one, which is what keeps the round trip exact.
+    clipped = np.clip(dst_edges, src_edges[0], src_edges[-1])
+    index = np.clip(np.searchsorted(src_edges, clipped, side="right") - 1, 0, widths.size - 1)
+    frac = (clipped - src_edges[index]) / widths[index]
 
     integral = cumulative[index] + frac[:, None] * (cumulative[index + 1] - cumulative[index])
-    return np.diff(integral, axis=0) / np.diff(edges)[:, None]
+    return np.diff(integral, axis=0) / np.diff(dst_edges)[:, None]
 
 
 def apply_rsds(
@@ -892,54 +964,68 @@ def apply_rsds(
         raise ValueError("field must have at least 2 slices")
     if field.shape[0] != distance.size:
         raise ValueError("field and distance must have the same number of slices")
+    if not isinstance(n_subcells, (int, np.integer)) or n_subcells < 1:
+        raise ValueError("n_subcells must be a positive integer")
 
     is_regular = np.allclose(np.diff(np.diff(distance)), 0.0)
     interpolator = RegularGridInterpolator if is_regular else RectBivariateSpline
 
-    smallest_slice = np.min(np.diff(distance))
-    rsd_dx = smallest_slice / n_subcells
-    dist = distance.to_value(rsd_dx.unit)
-    dx = rsd_dx.value
+    unit = distance.unit
+    dist = distance.to_value(unit)
+    los = np.asarray(un.Quantity(los_displacement).to_value(unit))
 
     # The output slices are cells, not points: they run from edge to edge.
     edges = _slice_edges(dist)
+    widths = np.diff(edges)
 
-    # Displacement in units of the fine cell, which is what cloud-in-cell wants.
-    los_cells = np.asarray(los_displacement / rsd_dx)
+    # Subdivide each output cell into ``n_subcells`` equal parts, so that every output
+    # edge is also a fine edge. On a regular grid that is just a uniform refinement; on
+    # an irregular one it is what keeps the refine-average round trip exact, which a
+    # globally uniform fine grid cannot do (its cells straddle the output edges and mix
+    # neighbouring slices together).
+    body = np.repeat(widths / n_subcells, n_subcells)
 
-    # Pad the fine grid by a whole number of fine cells at each end, so that material
-    # displaced off either end of the output grid still has somewhere to land -- and so
-    # that a regular output grid lines up exactly with the fine one.
-    n_near = int(np.ceil(max(np.max(los_cells[0]), 0.0)))
-    n_far = int(np.ceil(-min(np.min(los_cells[-1]), 0.0)))
-    n_body = int(np.ceil((edges[-1] - edges[0]) / dx - 1e-8))
-    nfine = n_near + n_body + n_far
-    fine_lo = edges[0] - n_near * dx
-    fine_grid = fine_lo + (np.arange(nfine) + 0.5) * dx
+    # Pad each end, in whole sub-cells of the adjacent slice, so that material displaced
+    # off the grid still has somewhere to land -- and is correctly counted as gone.
+    n_near = int(np.ceil(max(np.max(los[0]), 0.0) / body[0]))
+    n_far = int(np.ceil(-min(np.min(los[-1]), 0.0) / body[-1]))
+    fine_widths = np.concatenate((np.full(n_near, body[0]), body, np.full(n_far, body[-1])))
+    fine_edges = np.concatenate(([edges[0] - n_near * body[0]], np.zeros(fine_widths.size)))
+    fine_edges[1:] = fine_edges[0] + np.cumsum(fine_widths)
+    fine_grid = 0.5 * (fine_edges[:-1] + fine_edges[1:])
 
     # Refine the field conservatively: every fine cell takes the value of the output
-    # slice it lies in (and the end slices' values beyond the grid). Unlike
-    # interpolating it, this leaves the mean over each output slice untouched, so with
-    # no displacement the refine-displace-average round trip is the identity.
-    fine_field = np.asarray(field)[np.clip(np.searchsorted(edges, fine_grid) - 1, 0, dist.size - 1)]
+    # slice it lies in (and the end slices' values beyond the grid). Unlike interpolating
+    # it, this leaves the mean over each output slice untouched, so with no displacement
+    # the refine-displace-average round trip is the identity.
+    values = np.asarray(field)
+    fine_field = np.concatenate(
+        (
+            np.repeat(values[:1], n_near, axis=0),
+            np.repeat(values, n_subcells, axis=0),
+            np.repeat(values[-1:], n_far, axis=0),
+        )
+    )
 
     # The displacement, by contrast, is a smooth function sampled at the slice centres,
-    # so interpolate it.
+    # so interpolate it -- then express it in units of the local fine cell, which is what
+    # cloud-in-cell works in.
     ang_coords = np.arange(field.shape[1])
     if is_regular:
         x, y = np.meshgrid(fine_grid, ang_coords, indexing="ij")
         fine_rsd = interpolator(
             (dist, ang_coords),
-            los_cells,
+            los,
             bounds_error=False,
             fill_value=None,
         )((x.flatten(), y.flatten())).reshape(x.shape)
     else:
-        fine_rsd = interpolator(dist, ang_coords, los_cells)(fine_grid, ang_coords)
+        fine_rsd = interpolator(dist, ang_coords, los)(fine_grid, ang_coords)
+    fine_rsd = fine_rsd / fine_widths[:, None]
 
     # ``fine_grid`` runs from near to far, but ``los_displacement`` is positive towards
     # the observer, so the displacement *along the grid axis* is the negative of it.
     fine_field = cloud_in_cell_los(fine_field, -fine_rsd)
 
     # Integrate over each output slice rather than sampling it at the centre.
-    return _average_over_cells(fine_field, fine_lo, dx, edges)
+    return _rebin(fine_field, fine_edges, edges)

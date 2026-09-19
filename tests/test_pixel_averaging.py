@@ -49,7 +49,12 @@ def smooth_box(wavenumber: float = 2 * np.pi * 3 / NCELL) -> np.ndarray:
 def slice_at(
     latitude: np.ndarray, longitude: np.ndarray, box: np.ndarray, **kw: object
 ) -> np.ndarray:
-    """Tile ``box`` onto the given directions at ``RADIUS``, order-5 interpolation."""
+    """Tile ``box`` onto the given directions at ``RADIUS``, order-5 interpolation.
+
+    ``coeval_cell_width=0`` throughout this module: the boxes here are point samples of
+    an analytic mode, so they carry no cell window and a requested ``radial_width`` is
+    the whole of the output window rather than the remainder of it.
+    """
     return next(
         cmt.make_lightcone_slice(
             coevals=box,
@@ -58,6 +63,7 @@ def slice_at(
             distance_to_shell=RADIUS,
             origin=CENTRE,
             interpolation_order=5,
+            coeval_cell_width=0.0,
             **kw,
         )
     )
@@ -246,6 +252,7 @@ def test_radial_averaging_suppresses_a_radial_mode_like_a_top_hat(width: float) 
                     distance_to_shell=radius,
                     origin=CENTRE,
                     interpolation_order=5,
+                    coeval_cell_width=0.0,
                     **kw,
                 )
             )[0]
@@ -271,6 +278,37 @@ def test_n_radial_samples_one_is_the_shell_radius() -> None:
         np.testing.assert_array_equal(
             slice_at(latitude, longitude, box, radial_width=radial_width), reference
         )
+
+
+def test_a_window_no_wider_than_the_cell_is_a_no_op() -> None:
+    """Asking for exactly the window the box already has must change nothing.
+
+    With ``radial_width`` meaning the *total* window wanted, the default of one cell on
+    a cell-averaged box leaves nothing to apply -- and asking for anything narrower is
+    an error, since averaging cannot sharpen.
+    """
+    box = smooth_box()
+    latitude, longitude = cmt.healpix_subpixel_lonlat(nside=8)
+
+    def shell(**kw: object) -> np.ndarray:
+        return next(
+            cmt.make_lightcone_slice(
+                coevals=box,
+                latitude=latitude,
+                longitude=longitude,
+                distance_to_shell=RADIUS,
+                origin=CENTRE,
+                interpolation_order=5,
+                **kw,
+            )
+        )
+
+    np.testing.assert_array_equal(
+        shell(radial_width=1.0, n_radial_samples=8), shell(n_radial_samples=1)
+    )
+
+    with pytest.raises(ValueError, match="radial_width must be at least"):
+        shell(radial_width=0.5, n_radial_samples=8)
 
 
 def test_radial_and_angular_averaging_compose() -> None:
@@ -301,6 +339,7 @@ def test_radial_and_angular_averaging_compose() -> None:
                 distance_to_shell=radius,
                 origin=CENTRE,
                 interpolation_order=5,
+                coeval_cell_width=0.0,
             )
         )
         for weight, radius in zip(weights, radii, strict=True)
