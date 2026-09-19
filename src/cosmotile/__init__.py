@@ -11,7 +11,7 @@ from astropy import units as un
 from astropy.cosmology import FLRW, Planck18
 from astropy_healpix import HEALPix
 from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import map_coordinates, spline_filter
 from scipy.spatial.transform import Rotation
 
 from . import _version
@@ -42,6 +42,36 @@ def get_distance_to_shell_from_redshift(
         The distance, in units of pixels, to the shell.
     """
     return (cosmo.comoving_distance(z)).to(un.pixel, un.pixel_scale(cell_size / un.pixel))
+
+
+def _interpolate_coeval(coeval: np.ndarray, *, coordinates: np.ndarray, order: int) -> np.ndarray:
+    """Interpolate a coeval box at the given (pixel) coordinates.
+
+    This is a thin wrapper around :func:`scipy.ndimage.map_coordinates` that applies
+    the spline pre-filter itself, using the same periodic boundary condition as the
+    interpolation. Without the pre-filter, ``order >= 2`` evaluates the B-spline basis
+    directly against the data, which *smooths* the field rather than interpolating it
+    (the resulting curve does not pass through the input samples).
+
+    Orders 0 and 1 use interpolating kernels and need no pre-filter, so they are
+    passed straight through.
+
+    .. note:: The pre-filter runs once per call, so building a lightcone of many shells
+              from one coeval box re-filters that box for every shell. For a 256^3 box
+              that is around 0.7 s per shell at order 3, which dominates the cost of the
+              interpolation itself. Orders 0 and 1 are unaffected.
+    """
+    coeval = np.asarray(coeval)
+    if order > 1:
+        coeval = spline_filter(coeval, order=order, mode="grid-wrap", output=np.float64)
+
+    return map_coordinates(
+        coeval,
+        coordinates=coordinates,
+        order=order,
+        mode="grid-wrap",  # this wraps each dimension.
+        prefilter=False,  # we have already pre-filtered above, if required.
+    )
 
 
 def make_lightcone_slice_interpolator(
@@ -107,11 +137,9 @@ def make_lightcone_slice_interpolator(
     )
 
     coordmap = partial(
-        map_coordinates,
+        _interpolate_coeval,
         coordinates=pixel_coords,
         order=interpolation_order,
-        mode="grid-wrap",  # this wraps each dimension.
-        prefilter=False,
     )
 
     # Save the origin to the coordmap because it's useful for getting
@@ -349,6 +377,10 @@ def apply_rsds(
         The line-of-sight "apparent" displacement of the field, in pixel coordinates.
         Equal to ``v / H(z) / cell_size``.
         Positive values are towards the observer, shape ``(nslices, ncoords)``.
+        This is the same sign convention as the output of
+        :func:`make_lightcone_slice_vector_field`, so the two can be chained directly.
+        A parcel at comoving distance ``d`` with displacement ``u`` is observed at
+        apparent distance ``d - u``.
     distance
         The comoving distance to each slice in the field, in units of the cell size.
         shape (nslices,).
@@ -396,7 +428,10 @@ def apply_rsds(
         fine_rsd = interpolator(distance, ang_coords, los_displacement / rsd_dx)(
             fine_grid, ang_coords
         )
-    fine_field = cloud_in_cell_los(fine_field, fine_rsd)
+
+    # ``fine_grid`` runs from near to far, but ``los_displacement`` is positive towards
+    # the observer, so the displacement *along the grid axis* is the negative of it.
+    fine_field = cloud_in_cell_los(fine_field, -fine_rsd)
 
     x, y = np.meshgrid(distance, ang_coords, indexing="ij")
 

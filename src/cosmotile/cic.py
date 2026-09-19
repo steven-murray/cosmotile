@@ -110,9 +110,14 @@ def cloud_in_cell_los(
         The regularly-spaced (along LoS) field before displacement by delta_los.
         Shape ``(nlos_slices, nangles)``.
     delta_los
-        Displacement of each coordinate in the field along the LoS.
-        The displacement must be in units of the regular grid size, i.e.
-        ``v / H(z) / grid_resolution``. Same shape as ``field``.
+        Displacement of each coordinate in the field along the LoS *axis*, i.e. in the
+        direction of increasing index. The displacement must be in units of the regular
+        grid size, i.e. ``v / H(z) / grid_resolution``. Same shape as ``field``.
+
+        .. note:: This is a displacement along the array axis, *not* a velocity towards
+                  the observer. If the grid runs from near to far (as it does in
+                  :func:`cosmotile.apply_rsds`), a velocity towards the observer
+                  corresponds to a *negative* ``delta_los``.
     periodic
         Whether the field is periodic along the line-of-sight axis.
     """
@@ -132,7 +137,10 @@ def cloud_in_cell_los(
         ddx = delta_los[ii]
         x = ii + ddx
 
-        i = x.astype(np.int32)
+        # Use floor (not a cast, which truncates towards zero) so that displacements
+        # that take a cell below the start of the grid land on a negative index and are
+        # correctly identified as having left the (non-periodic) grid.
+        i = np.floor(x).astype(np.int64)
         ip = i + 1
 
         tx = ip - x

@@ -56,6 +56,8 @@ dev = [
     "pytest-cov>=3.0.0",
     "pre-commit",
     'ruff',
+    "powerbox>=0.8",
+    "healpy>=1.16",
 ]
 
 all = [
@@ -164,6 +166,9 @@ extend-select = [
 "docs/conf.py" = [
     "A",  # conf.py can shadow builtins
     "ERA",
+]
+"docs/make_accuracy_figures.py" = [
+    "T",  # it is a command-line script; printing where it wrote the figures is the point
 ]
 
 [tool.ruff.lint.pydocstyle]

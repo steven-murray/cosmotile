@@ -234,117 +234,79 @@ def test_lightcone_slice_vector_field() -> None:
     assert np.isclose(los[22], 0 * un.pixel)
 
 
-def test_apply_rsds() -> None:
-    """Test the apply_rsds function."""
+def test_apply_rsds_input_validation() -> None:
+    """Bad shapes must be rejected before any work is done."""
     field = np.ones((2, 10))
     losv = np.ones((2, 10)) * un.pixel
-    losv[1] = -1 * un.pixel
     distance = np.array([10, 11]) * un.pixel
 
     with pytest.raises(ValueError, match="field must have at least 2 slices"):
         cmt.apply_rsds(
-            field=field[:1],
-            los_displacement=losv[:1],
-            distance=distance[:1],
-            n_subcells=1,
+            field=field[:1], los_displacement=losv[:1], distance=distance[:1], n_subcells=1
         )
 
     with pytest.raises(ValueError, match="field and los_displacement must have the same shape"):
-        cmt.apply_rsds(
-            field=field[:, :9],
-            los_displacement=losv,
-            distance=distance,
-            n_subcells=1,
-        )
+        cmt.apply_rsds(field=field[:, :9], los_displacement=losv, distance=distance, n_subcells=1)
 
     with pytest.raises(ValueError, match="field and distance must have the same number"):
-        cmt.apply_rsds(
-            field=field,
-            los_displacement=losv,
-            distance=distance[:1],
-            n_subcells=1,
+        cmt.apply_rsds(field=field, los_displacement=losv, distance=distance[:1], n_subcells=1)
+
+
+def test_apply_rsds_edges() -> None:
+    """Behaviour of ``apply_rsds`` on a two-slice grid, where every parcel is at an edge.
+
+    Positive displacement is *towards the observer*, so on a grid with slices at
+    distances 10 and 11 a positive displacement at the near slice pushes material off
+    the near end and a negative one at the far slice pushes it off the far end. There is
+    no periodicity along the line of sight, so that material is simply gone.
+
+    See ``test_rsd_physics.py`` for the tests that check the displacement is physically
+    *right*; this one only pins the edge behaviour.
+    """
+    field = np.ones((2, 10))
+    distance = np.array([10, 11]) * un.pixel
+
+    def apply(los: np.ndarray, n_subcells: int = 1) -> np.ndarray:
+        return cmt.apply_rsds(
+            field=field, los_displacement=los, distance=distance, n_subcells=n_subcells
         )
 
-    # Here, the close slice all moves inward, and the far slice all moves outward,
-    # so nothing left in the field.
-    out = cmt.apply_rsds(
-        field=field,
-        los_displacement=losv,
-        distance=distance,
-        n_subcells=1,
-    )
+    # The near slice moves towards the observer and the far slice away from it, so both
+    # leave the grid and nothing is left.
+    losv = np.ones((2, 10)) * un.pixel
+    losv[1] = -1 * un.pixel
+    assert np.all(apply(losv) == 0)
 
-    np.all(out == 0)
-
-    # Now, they both point inwards, so we should end up with all ones.
+    # Reversed, the two slices simply swap places, so the uniform field is preserved.
     losv = np.ones((2, 10)) * un.pixel
     losv[0] = -1 * un.pixel
+    assert np.all(apply(losv) == 1)
 
-    out = cmt.apply_rsds(
-        field=field,
-        los_displacement=losv,
-        distance=distance,
-        n_subcells=1,
-    )
+    # A constant displacement translates rigidly -- but a two-slice grid is shorter than
+    # the shift, so everything is translated straight off the near end.
+    assert np.all(apply(3 * np.ones((2, 10)) * un.pixel) == 0)
 
-    np.all(out == 1)
+    # Both slices converge on distance 10.5, exactly between the two grid points. At
+    # n_subcells=1 the cloud-in-cell kernel splits that evenly back onto both slices...
+    losv = np.array([-0.5 * np.ones(10), 0.5 * np.ones(10)]) * un.pixel
+    assert np.all(apply(losv, n_subcells=1) == 1)
 
-    # In fact, any velocity field that is constant should keep the out constant.
-    losv = 3 * np.ones((2, 10)) * un.pixel
+    # ...but on a finer sub-grid the material lands wholly in a sub-cell that no output
+    # slice sits on, and the final step *samples* the sub-grid rather than averaging over
+    # it, so it vanishes. Raising ``n_subcells`` is not free: see the accuracy docs.
+    assert np.all(apply(losv, n_subcells=4) == 0)
 
-    out = cmt.apply_rsds(
-        field=field,
-        los_displacement=losv,
-        distance=distance,
-        n_subcells=1,
-    )
 
-    np.all(out == 1)
-
-    # Here, every pixel goes to the middle, but this *just* includes the two pixels
-    # we put in.
-    losv = (
-        np.array(
-            [
-                -0.5 * np.ones(10),
-                0.5 * np.ones(10),
-            ]
-        )
-        * un.pixel
-    )
-
-    out = cmt.apply_rsds(
-        field=field,
-        los_displacement=losv,
-        distance=distance,
-        n_subcells=1,
-    )
-
-    np.all(out == 1)
-
-    out = cmt.apply_rsds(
-        field=field,
-        los_displacement=losv,
-        distance=distance,
-        n_subcells=4,
-    )
-
-    np.all(out == 1)
-
-    # Now, change the distance ever so slightly, so we use the other interpolator.
+def test_apply_rsds_irregular_distance_grid() -> None:
+    """An unevenly-spaced radial grid takes the spline path and must still be an identity."""
     field = np.ones((7, 10))
-
     losv = np.zeros((7, 10)) * un.pixel
     distance = np.array([10, 11.001, 12, 13, 14, 15, 16]) * un.pixel
 
-    out = cmt.apply_rsds(
-        field=field,
-        los_displacement=losv,
-        distance=distance,
-        n_subcells=1,
-    )
+    out = cmt.apply_rsds(field=field, los_displacement=losv, distance=distance, n_subcells=1)
 
-    np.allclose(out, 1, atol=2e-3)
+    assert not np.allclose(np.diff(np.diff(distance.value)), 0.0), "grid must be irregular"
+    np.testing.assert_allclose(out, 1, atol=2e-3)
 
 
 def test_vector_field_nonzero_origin() -> None:
