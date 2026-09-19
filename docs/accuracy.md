@@ -173,9 +173,8 @@ $$
 N_{\rm side} \gtrsim \frac{r}{2\Delta},
 $$
 
-since a HEALPix pixel subtends roughly $0.52/N_{\rm side}$ radians,
-
-and then only trust $\ell \ll 2 N_{\rm side}$.
+which follows from a HEALPix pixel subtending roughly $0.52/N_{\rm side}$ radians. Then
+trust only $\ell \ll 2 N_{\rm side}$.
 
 ## Replication
 
