@@ -3,11 +3,6 @@ r"""Direct tests of the shipped theory module, :mod:`cosmotile.theory`.
 These are unit tests of the predictions themselves: that the interpolation window really
 is the Fourier response of what ``cosmotile`` does, that the binned mode sum reproduces
 the sum it compresses, and that the continuum integral reproduces its closed form.
-
-The *end-to-end* checks -- that a shell tiled out of a Gaussian box actually has the
-predicted angular power -- live in ``test_angular_power.py``, which needs ``powerbox``
-and ``healpy``. Nothing here does: the module is part of the package, so its tests must
-run wherever the package does.
 """
 
 from __future__ import annotations
@@ -153,22 +148,54 @@ def test_discrete_binning_is_exact_for_resolved_modes() -> None:
     )
 
 
-def test_discrete_binning_is_accurate_on_a_real_mode_grid() -> None:
-    """On a full FFT mode grid the binning must still track the unbinned sum closely."""
-    ncell, radius = 32, 40.0
+def grid_modes(ncell: int, order: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """Flat ``(|k|, P(k) W(k)^2)`` for the non-zero FFT modes of an ``ncell**3`` box."""
     kmag, kvec = mode_grid(ncell)
-    pk = band_limited_powerlaw(-2.0, np.pi / 4)
-    weight = pk(kmag) * interpolation_window(kvec) ** 2
-
+    weight = band_limited_powerlaw(-2.0, np.pi / 4)(kmag) * interpolation_window(kvec, order) ** 2
     nonzero = kmag > 0
-    flat_k, flat_w = kmag[nonzero].ravel(), weight[nonzero].ravel()
+    return kmag[nonzero].ravel(), weight[nonzero].ravel()
+
+
+@pytest.mark.parametrize("radius", [20.0, 40.0, 200.0])
+def test_discrete_binning_is_accurate_on_a_real_mode_grid(radius: float) -> None:
+    """On a full FFT mode grid the binning must reproduce the unbinned sum.
+
+    The default bin count is chosen from ``radius`` precisely so that this holds at
+    every radius. It is the one thing about the compression that can go wrong: bin
+    widths that do not resolve the oscillation of ``j_ell^2(kr)`` average the Bessel
+    function over the bin instead of evaluating it, which a fixed bin count silently
+    starts doing as the shell is pushed outwards.
+    """
+    ncell = 48
+    flat_k, flat_w = grid_modes(ncell)
     volume = float(ncell) ** 3
-    ells = np.arange(2, 40)
+    ells = np.arange(2, min(int(0.8 * (np.pi / 4) * radius), 40))
 
     np.testing.assert_allclose(
         discrete_angular_power(flat_k, flat_w, volume, radius, ells),
         brute_force_mode_sum(flat_k, flat_w, volume, radius, ells),
         rtol=1e-3,
+    )
+
+
+def test_discrete_default_bin_count_beats_a_fixed_one() -> None:
+    """A radius-independent bin count is not good enough, which is why the default is not.
+
+    Pinned as a regression: 300 fixed bins -- the value this function shipped with
+    before the default was made radius-aware -- are wrong by tens of percent for a shell
+    at 200 cells, while the default is exact there.
+    """
+    ncell, radius = 64, 200.0
+    flat_k, flat_w = grid_modes(ncell)
+    volume = float(ncell) ** 3
+    ells = np.arange(2, 40)
+
+    exact = brute_force_mode_sum(flat_k, flat_w, volume, radius, ells)
+    fixed = discrete_angular_power(flat_k, flat_w, volume, radius, ells, nbin=300)
+
+    assert np.max(np.abs(fixed / exact - 1)) > 0.1
+    np.testing.assert_allclose(
+        discrete_angular_power(flat_k, flat_w, volume, radius, ells), exact, rtol=1e-3
     )
 
 
@@ -194,7 +221,7 @@ def test_discrete_approaches_the_continuum_for_a_large_box() -> None:
     flat_k = kmag[nonzero].ravel()
     ells = np.arange(4, 12)
 
-    discrete = discrete_angular_power(flat_k, pk(flat_k), float(ncell) ** 3, radius, ells, nbin=600)
+    discrete = discrete_angular_power(flat_k, pk(flat_k), float(ncell) ** 3, radius, ells)
     continuum = continuum_angular_power(pk, radius, ells, kcut)
 
     np.testing.assert_allclose(discrete, continuum, rtol=0.02)

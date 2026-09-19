@@ -124,8 +124,7 @@ your pipeline's normalisation in the regime $\ell \ll k_{\rm cut} r$, and
 
 All three functions work in **cell units**: the cell size is unity, so the box length is
 $L = N$, the volume is $V = N^3$, wavenumbers are $k = 2\pi j / N$ and the distance to
-the shell is in cells. The mode grid is three lines of {func}`numpy.fft.fftfreq`, kept
-broadcastable so that only $|k|$ is ever materialised:
+the shell is in cells.
 
 ```python
 import numpy as np
@@ -135,7 +134,9 @@ from cosmotile.theory import (
     interpolation_window,
 )
 
-ncell, radius, order = 128, 200.0, 1  # cells, cells, interpolation_order
+ncell = 128  # box size, in cells
+radius = 200.0  # distance to the shell, in cells
+order = 1  # matches interpolation_order
 ells = np.arange(2, 301)
 
 

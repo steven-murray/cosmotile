@@ -1,11 +1,10 @@
 r"""Closed-form predictions for the statistics of a tiled shell.
 
-``cosmotile`` cuts a spherical shell out of a periodically-tiled coeval box. The
-statistics of the resulting map are not free parameters: given the three-dimensional
-power spectrum of the coeval box, the angular power spectrum of the shell is fixed, and
-this module evaluates it.
+``cosmotile`` cuts a spherical shell out of a periodically-tiled coeval box. Given the
+three-dimensional power spectrum of the coeval box, the angular power spectrum of the
+shell is fixed, and this module evaluates it.
 
-Three pieces are provided, and they answer three different questions.
+Three functions are provided.
 
 :func:`continuum_angular_power`
     What the shell *would* have if the box were infinite,
@@ -30,6 +29,15 @@ Three pieces are provided, and they answer three different questions.
 The difference between the first two is the power a finite box is missing; the third is
 the power the interpolation suppresses at the small-scale end. Together they bracket the
 window of validity documented in :doc:`accuracy`.
+
+This is also how to check that ``cosmotile`` is working. Measure the angular power
+spectrum of a shell you have actually tiled -- one realisation, or better an average over
+several -- and compare it against :func:`discrete_angular_power` with
+:func:`interpolation_window` squared folded into the weights. That is the prediction the
+tiling is supposed to reproduce, and inside the window of validity it does so to a few
+percent. Comparing instead against :func:`continuum_angular_power` mixes in the finite
+box's missing power, and comparing against ``P(l / r) / r**2`` is the Limber
+approximation, which a geometrically thin shell does not have.
 
 Notes
 -----
@@ -71,6 +79,11 @@ __all__ = [
 ]
 
 _MAX_ORDER = 5
+
+# Bins per oscillation of j_ell^2, and a floor for shells so close that the criterion
+# asks for almost none. See the ``nbin`` discussion in discrete_angular_power.
+_BINS_PER_OSCILLATION = 16
+_MIN_BINS = 100
 
 
 def _cardinal_bspline_at_integers(order: int) -> np.ndarray:
@@ -192,7 +205,7 @@ def discrete_angular_power(
     volume: float,
     radius: float,
     ells: np.ndarray,
-    nbin: int = 300,
+    nbin: int | None = None,
 ) -> np.ndarray:
     r"""Evaluate the angular power spectrum of a thin shell through a periodic box.
 
@@ -226,9 +239,20 @@ def discrete_angular_power(
     ells
         Multipoles at which to evaluate.
     nbin
-        Number of ``|k|`` bins used to compress the mode sum. ``j_ell`` depends only on
-        ``|k|``, so modes may be pre-summed in fine bins of ``|k|`` without loss, which
-        turns an ``n**3``-term sum into an ``nbin``-term one.
+        Number of ``|k|`` bins used to compress the mode sum, or ``None`` (the default)
+        to choose it from ``radius``. ``j_ell`` depends on the modes only through
+        ``|k|``, so they may be pre-summed in bins of ``|k|``, which turns an
+        ``n**3``-term sum into an ``nbin``-term one.
+
+        That compression is only lossless while ``j_ell^2(kr)`` is effectively constant
+        across a bin, and it oscillates with period ``pi / radius`` in ``k``. The bins
+        must therefore be narrower than that, so the number needed *grows with the
+        shell radius*. The default places 16 bins per oscillation, which reproduces the
+        unbinned sum to a few parts in ``10**4`` -- and exactly, once the bins are fine
+        enough to separate the box's distinct ``|k|`` values, which for a shell beyond a
+        few tens of cells they are. A fixed ``nbin`` that ignores ``radius`` does not:
+        300 bins are ample at a radius of 40 cells and wrong by tens of percent at
+        200.
 
     Returns
     -------
@@ -239,7 +263,11 @@ def discrete_angular_power(
     --------
     continuum_angular_power : The infinite-box limit of this sum.
     """
-    edges = np.linspace(kmag.min() * 0.999, kmag.max() * 1.001, nbin + 1)
+    lo, hi = kmag.min() * 0.999, kmag.max() * 1.001
+    if nbin is None:
+        oscillations = (hi - lo) * radius / np.pi
+        nbin = max(_MIN_BINS, int(np.ceil(_BINS_PER_OSCILLATION * oscillations)))
+    edges = np.linspace(lo, hi, nbin + 1)
 
     # One pass gives both the summed weight in each bin and its weighted mean |k|.
     index = np.digitize(kmag, edges)
