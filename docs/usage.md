@@ -8,6 +8,13 @@ Everything is measured in **cell units**: `distance_to_shell` and `origin` are i
 of the coeval box's cell size, not in Mpc. Use
 {func}`~cosmotile.get_distance_to_shell_from_redshift` to convert.
 
+Whatever a cell of your box holds is what comes out. Simulation cells almost always hold
+the *mean* of the field over the cell, so your lightcone carries that cell window, plus
+the reconstruction kernel set by `interpolation_order`, plus any output window you ask
+for. That chain decides which windows you should and should not divide out of a measured
+power spectrum, and it is worked through in
+[What a cell holds, and what comes out](accuracy).
+
 ## A single shell
 
 ```python
@@ -96,27 +103,44 @@ sight. See [Accuracy and Limitations](accuracy) for when that trade is worth mak
 
 ## Averaging over the pixel instead of sampling it
 
-By default each value is a single sample of the coeval field at the pixel centre, at
-exactly the shell radius. To average over the solid angle and radial extent the pixel
+By default each value is a single sample of the reconstructed field at the pixel centre,
+at exactly the shell radius. To average over the solid angle and radial extent the pixel
 really covers, pass `subsample_level` (angular) and `radial_width` with
 `n_radial_samples` (radial):
 
 ```python
+slice_spacing = 5.0  # cells between neighbouring shells
+
 (shell,) = cosmotile.make_healpix_lightcone_slice(
     nside=nside,
     subsample_level=2,  # average over the 4**2 sub-pixels of nside * 2**2
     coevals=box,
     distance_to_shell=100.0,
-    radial_width=5.0,  # the slice thickness, in cells
+    radial_width=cosmotile.residual_radial_width(slice_spacing),
     n_radial_samples=4,
 )
 ```
 
+Note the `radial_width`: it is **not** the slice spacing. Your box already carries about
+one cell of radial smoothing, so asking for the full spacing on top double-counts;
+{func}`~cosmotile.residual_radial_width` returns what is actually left to apply, and
+returns zero (a no-op) when the cell window already supplies it.
+
 This costs `4**subsample_level * n_radial_samples` interpolations per pixel, and it makes
 the output a genuinely pixelised map — so the HEALPix pixel window then applies to its
 angular power spectrum, whereas on a sampled map it must not be divided out. Both
-defaults reproduce point sampling exactly. See
-[Accuracy and Limitations](accuracy) for the details.
+defaults reproduce point sampling exactly.
+
+If you need the output to carry *only* the window you asked for, remove the box's own
+cell window once, before the shell loop:
+
+```python
+sharpened = cosmotile.deconvolve_cell_window(box)
+```
+
+That is usually not what you want — the cell average is the field at the resolution your
+simulation actually has, and deconvolving amplifies near-Nyquist noise. See
+[Accuracy and Limitations](accuracy) for when it earns its place.
 
 ## Redshift-space distortions
 

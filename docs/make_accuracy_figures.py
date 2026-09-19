@@ -346,6 +346,74 @@ def figure_n_subcells_convergence() -> None:
     plt.close(fig)
 
 
+def figure_cell_window() -> None:
+    """Interpolation order converges on the cell-averaged field, not the underlying one."""
+    ncell, radius = 64, 17.3
+    grid = np.meshgrid(*(np.arange(ncell, dtype=float),) * 3, indexing="ij")
+    centre = np.array([ncell / 2] * 3)
+
+    rng = np.random.default_rng(0)
+    vec = rng.normal(size=(3000, 3))
+    vec /= np.linalg.norm(vec, axis=1)[:, None]
+    lat = np.arcsin(vec[:, 2])
+    lon = np.mod(np.arctan2(vec[:, 1], vec[:, 0]), 2 * np.pi)
+
+    harmonics = [2, 4, 8, 12, 16]
+    orders = [1, 2, 3, 5]
+    as_is = {order: [] for order in orders}
+    deconvolved = {order: [] for order in orders}
+    floors = []
+
+    for harmonic in harmonics:
+        kvec = np.array([2 * np.pi * harmonic / ncell, 0.0, 0.0])
+        window = float(np.sinc(kvec[0] / (2 * np.pi)))
+        floors.append(1 - window)
+
+        averaged = window * np.cos(kvec[0] * (grid[0] - centre[0]))
+        sharpened = cmt.deconvolve_cell_window(averaged)
+        truth = np.cos((radius * vec) @ kvec)
+
+        for order in orders:
+            for box, store in ((averaged, as_is), (sharpened, deconvolved)):
+                shell = next(
+                    cmt.make_lightcone_slice(
+                        coevals=box,
+                        latitude=lat,
+                        longitude=lon,
+                        distance_to_shell=radius,
+                        origin=centre,
+                        interpolation_order=order,
+                    )
+                )
+                store[order].append(np.abs(shell - truth).max())
+
+    kmags = 2 * np.pi * np.array(harmonics) / ncell / np.pi  # in units of the Nyquist
+
+    fig, (left, right) = plt.subplots(1, 2, figsize=(8.0, 3.8), sharey=True, layout="constrained")
+    for axis, store, title in (
+        (left, as_is, "as given (cell averages)"),
+        (right, deconvolved, "after deconvolve_cell_window"),
+    ):
+        # Distinct markers: on the left, orders 2-5 land on top of one another, which is
+        # the whole point and should not read as missing curves.
+        for order, marker in zip(orders, "os^D", strict=True):
+            axis.loglog(
+                kmags, store[order], marker=marker, ls="-", ms=4, lw=1.1, label=f"order {order}"
+            )
+        axis.loglog(kmags, floors, "k--", lw=1.4, label=r"cell window $1-\mathrm{sinc}(k/2)$")
+        axis.set_xlabel(r"$k \,/\, k_{\rm Nyq}$")
+        axis.set_title(title, fontsize=9)
+        axis.grid(alpha=0.25, which="both", lw=0.4)
+        axis.set_xticks(kmags)
+        axis.set_xticklabels([f"{v:.2f}" for v in kmags])
+        axis.minorticks_off()
+    left.set_ylabel("max error against the underlying field")
+    left.legend(frameon=False, fontsize=8, loc="lower right")
+
+    fig.savefig(OUT / "cell_window.svg")
+    plt.close(fig)
+
+
 def main() -> None:
     """Build every figure."""
     OUT.mkdir(exist_ok=True)
@@ -355,6 +423,7 @@ def main() -> None:
     figure_angular_scale()
     figure_pixel_window()
     figure_n_subcells_convergence()
+    figure_cell_window()
     print(f"wrote figures to {OUT}")
 
 

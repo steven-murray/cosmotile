@@ -127,6 +127,135 @@ def prefilter_coeval(coeval: np.ndarray, order: int) -> PrefilteredCoeval:
     return out
 
 
+def cell_window(shape: Sequence[int], width: float = 1.0, rfft: bool = False) -> np.ndarray:
+    r"""Fourier response of a top-hat of ``width`` cells, on the mode grid of ``shape``.
+
+    A simulation cell almost always holds the *mean* of the field over that cell, which
+    is the same thing as a point sample of the field convolved with a top-hat of one cell
+    on a side. In Fourier space that is
+
+    .. math:: \tilde{T}(\mathbf{k}) = \prod_i \mathrm{sinc}(k_i w / 2),
+
+    which is what this returns, broadcast over the axes of ``shape`` rather than
+    materialised. See :func:`deconvolve_cell_window` for why you might want it.
+
+    Parameters
+    ----------
+    shape
+        Shape of the grid whose Fourier modes the window is evaluated on.
+    width
+        Width of the top-hat, in cells. One cell by default.
+    rfft
+        Whether the last axis is laid out for :func:`numpy.fft.rfftn` (half-spectrum)
+        rather than :func:`numpy.fft.fftn`.
+    """
+    window = np.ones((1,) * len(shape))
+    for axis, size in enumerate(shape):
+        last = axis == len(shape) - 1
+        freq = np.fft.rfftfreq(size) if (rfft and last) else np.fft.fftfreq(size)
+        broadcast = [1] * len(shape)
+        broadcast[axis] = -1
+        # np.sinc(y) = sin(pi y) / (pi y), and k = 2 pi freq, so sin(k w /2) / (k w / 2)
+        # is np.sinc(freq * w).
+        window = window * np.sinc(freq * width).reshape(broadcast)
+    return window
+
+
+def deconvolve_cell_window(coeval: np.ndarray, width: float = 1.0) -> np.ndarray:
+    r"""Undo the cell-averaging built into a gridded simulation.
+
+    A coeval box almost always holds cell *averages*, ``g_n = (T * f)(x_n)``, where ``f``
+    is the underlying field and ``T`` a top-hat one cell wide. That single number is both
+    "the mean of ``f`` over the cell" and "a point sample of the smoothed field
+    ``s = T * f``" -- the same quantity under two names. Everything else in ``cosmotile``
+    reconstructs and evaluates whatever the box holds, so by default a lightcone carries
+    ``T`` whether you want it or not.
+
+    This divides ``T`` out, turning cell averages into point samples of ``f``. It is
+    exact for a periodic field band-limited to the grid Nyquist, and the output window of
+    an averaged lightcone is then only the window you asked for, rather than that window
+    convolved with ``T``.
+
+    **You usually do not want this.** The cell average is the field at the resolution the
+    simulation actually has; deconvolving sharpens structure it never resolved and
+    amplifies whatever aliased power and noise sit near Nyquist (a factor of
+    ``1 / prod_i sinc(k_i / 2)``, which reaches 3.9 at the Nyquist corner of a 3D grid,
+    and about 1.6 in RMS on a white-noise box). Reach for it only when you need a lightcone
+    whose window is exactly a quantity you have specified -- for instance when comparing a
+    line-of-sight power spectrum against ``P(k)`` times a known channel response.
+
+    It is a standalone function rather than a keyword on the interpolator because it need
+    only be done once per box: applying it per shell would repeat it for every slice of a
+    lightcone, in the same way the spline pre-filter used to be before
+    :func:`prefilter_coeval`. If you use both, deconvolve first and pre-filter the
+    result -- the pre-filter is computed from whatever values it is handed.
+
+    Parameters
+    ----------
+    coeval
+        The gridded field, of any dimensionality. Assumed periodic, as everywhere else.
+    width
+        Width of the cell top-hat, in cells. One cell by default; must be less than two,
+        since ``sinc(k w / 2)`` has its first zero at ``k = pi``, ``w = 2`` and a wider
+        window is not invertible on the grid.
+
+    Returns
+    -------
+    deconvolved
+        Point samples of the underlying field, same shape and dtype-kind as the input.
+    """
+    if not 0 < width < 2:
+        raise ValueError("width must be positive and less than two cells")
+
+    coeval = np.asarray(coeval, dtype=float)
+    transformed = np.fft.rfftn(coeval)
+    return np.fft.irfftn(
+        transformed / cell_window(coeval.shape, width, rfft=True),
+        s=coeval.shape,
+        axes=range(coeval.ndim),
+    )
+
+
+def residual_radial_width(slice_width: float, cell_size: float = 1.0) -> float:
+    r"""Return the ``radial_width`` to request for a given output radial window.
+
+    A lightcone slice usually wants to be the mean of the field over a radial top-hat of
+    ``slice_width`` -- the slice spacing, or the width of a frequency channel. But a
+    cell-averaged box already contributes a top-hat of one cell along the line of sight,
+    so asking for the full ``slice_width`` on top of it double-counts: the delivered
+    window is the product ``sinc(k w / 2) sinc(k D / 2)``, not ``sinc(k w / 2)`` alone.
+
+    Both windows expand as ``1 - k^2 x^2 / 24``, so their widths add in quadrature to
+    leading order and the residual width to request is
+
+    .. math:: w = \sqrt{\max(\Delta r^2 - \Delta^2,\; 0)}.
+
+    That reproduces the requested window to better than 2.5% out to its own Nyquist for
+    any ratio of the two widths, against up to 36% for the naive ``w = slice_width``.
+
+    A return value of zero means the cell window *is* the window you wanted, so request
+    no radial averaging at all -- which is what happens if you pass the zero straight
+    through to :func:`make_lightcone_slice_interpolator`.
+
+    Parameters
+    ----------
+    slice_width
+        Width of the radial top-hat you want the output to carry, in cells.
+    cell_size
+        Width of the cell top-hat already present in the box, in cells. One by default;
+        pass zero if your box holds point samples rather than cell averages.
+
+    Returns
+    -------
+    width
+        The value to pass as ``radial_width``. Zero when the box already supplies enough.
+    """
+    if slice_width < 0 or cell_size < 0:
+        raise ValueError("slice_width and cell_size must be non-negative")
+
+    return float(np.sqrt(max(slice_width**2 - cell_size**2, 0.0)))
+
+
 def _average_subsamples(values: np.ndarray, weights: np.ndarray | None) -> np.ndarray:
     """Collapse per-sub-sample values onto one value per output pixel.
 
@@ -150,9 +279,15 @@ def _interpolate_coeval(
 
     This is a thin wrapper around :func:`scipy.ndimage.map_coordinates` that applies
     the spline pre-filter itself, using the same periodic boundary condition as the
-    interpolation. Without the pre-filter, ``order >= 2`` evaluates the B-spline basis
-    directly against the data, which *smooths* the field rather than interpolating it
-    (the resulting curve does not pass through the input samples).
+    interpolation. The pre-filter is what forces the reconstruction to pass through the
+    grid values; without it, ``order >= 2`` evaluates the B-spline basis directly against
+    the data, which *smooths* the field rather than interpolating it.
+
+    Note that "the grid values" is all this function knows about. If those values are
+    cell averages -- as simulation outputs generally are -- then the reconstruction
+    converges with order onto the *cell-averaged* field, not the underlying one, and the
+    gap between them is the cell window rather than an interpolation error. See
+    :func:`deconvolve_cell_window`.
 
     Orders 0 and 1 use interpolating kernels and need no pre-filter, so they are
     passed straight through.
@@ -194,14 +329,15 @@ def _radial_quadrature(
 ) -> tuple[Sequence[float], np.ndarray]:
     """Gauss-Legendre nodes and weights across the radial extent of a shell.
 
-    A lightcone shell is not geometrically thin -- it has the thickness of the slice
-    spacing -- so the value a pixel should carry is the average of the field over
-    ``[r - w/2, r + w/2]``, weighted by the ``r^2`` volume element.
+    Averages the field over ``[r - w/2, r + w/2]``, weighted by the ``r^2`` volume
+    element, which is the mean over a shell of that thickness.
 
-    With ``n_radial_samples == 1`` this returns the shell radius itself and a unit
-    weight, which is the point-sampling behaviour.
+    A single node, or a zero width, returns the shell radius itself with unit weight --
+    the point-sampling behaviour. :func:`residual_radial_width` returns zero whenever the
+    box's own cell window already supplies the wanted radial average, so that value is
+    meant to pass straight through to here.
     """
-    if n_radial_samples == 1:
+    if n_radial_samples == 1 or radial_width == 0:
         return [distance_to_shell], np.ones(1)
 
     nodes, weights = np.polynomial.legendre.leggauss(n_radial_samples)
@@ -224,11 +360,25 @@ def make_lightcone_slice_interpolator(
     """
     Create a callable interpolator for a lightcone slice.
 
-    By default each output pixel is a single *point sample* of the coeval field, at the
-    pixel centre and at exactly the shell radius. Both directions can instead be
+    By default each output pixel is a single *point sample* of the reconstructed field,
+    at the pixel centre and at exactly the shell radius. Both directions can instead be
     *averaged* over the extent the pixel really subtends -- see ``latitude`` and
     ``radial_width`` below. Averaging costs one interpolation per sub-sample, so it is
     opt-in; nothing changes unless you ask for it.
+
+    What the output value is, precisely, is ``Q * L * T * f`` evaluated at the pixel:
+
+    * ``f`` is the underlying continuous field;
+    * ``T`` is the **cell window** the input box already carries, because a simulation
+      cell holds the mean over that cell. It is always there. Remove it beforehand with
+      :func:`deconvolve_cell_window` if -- and only if -- you need it gone;
+    * ``L`` is the reconstruction kernel, set by ``interpolation_order``;
+    * ``Q`` is the output window: nothing by default, the sub-samples given in
+      ``latitude`` and/or a radial top-hat of ``radial_width`` if you ask.
+
+    Because ``T`` never leaves, a requested ``Q`` is delivered convolved with it. See
+    :func:`residual_radial_width`, and "What a cell holds, and what comes out" in the
+    accuracy documentation.
 
     Parameters
     ----------
@@ -257,13 +407,17 @@ def make_lightcone_slice_interpolator(
         This is done before shifting the origin, and is equivalent to rotating the
         coeval box beforing tiling it.
     radial_width
-        The radial thickness of the shell, in units of the cell size -- in a lightcone,
-        the spacing between neighbouring slices. Only used when
+        Width of the radial top-hat to average over, in units of the cell size. This is
+        *not* simply the slice spacing: the box's own cell window already contributes
+        about one cell of radial smoothing, so pass
+        ``residual_radial_width(slice_spacing)`` rather than the spacing itself. Zero
+        (the default) requests no radial averaging. Only used when
         ``n_radial_samples > 1``.
     n_radial_samples
         The number of Gauss-Legendre nodes used to average the field over
-        ``radial_width``, weighted by the ``r^2`` volume element. The default of 1
-        samples the shell radius itself.
+        ``radial_width``, weighted by the ``r^2`` volume element -- the volume element is
+        always applied, since it is what makes the result the mean over the shell. The
+        default of 1 samples the shell radius itself.
 
     Returns
     -------
@@ -289,11 +443,11 @@ def make_lightcone_slice_interpolator(
     if n_radial_samples < 1:
         raise ValueError("n_radial_samples must be at least 1")
 
-    if n_radial_samples > 1 and not 0 < radial_width < 2 * distance_to_shell:
-        raise ValueError(
-            "radial_width must be positive and less than twice distance_to_shell "
-            "when averaging radially"
-        )
+    if radial_width < 0:
+        raise ValueError("radial_width must be non-negative")
+
+    if radial_width >= 2 * distance_to_shell:
+        raise ValueError("radial_width must be less than twice distance_to_shell")
 
     if isinstance(origin, (tuple, list)):
         origin = np.array(origin)
@@ -361,6 +515,12 @@ def make_lightcone_slice(
     Create a lightcone slice in angular coordinates from two coeval simulations.
 
     Interpolates the input coeval box to angular coordinates.
+
+    Whatever a cell of ``coevals`` holds is what comes out. A simulation cell almost
+    always holds the *mean* of the field over that cell, so the output carries that cell
+    window -- plus the reconstruction kernel set by ``interpolation_order``, plus any
+    output window you request. See :func:`make_lightcone_slice_interpolator` for the full
+    chain, and :func:`deconvolve_cell_window` if you need the cell window gone.
 
     Parameters
     ----------
@@ -596,16 +756,15 @@ def make_healpix_lightcone_slice(
     order
         The ordering of the pixels in the healpix map.
     subsample_level
-        If zero (the default), each pixel takes a single sample of the field at its
-        centre, which is the historical behaviour: the resulting map is a *sampled*
-        field, not a pixelised one, so the HEALPix pixel window does not apply to it and
-        must not be divided out.
+        If zero (the default), each pixel takes a single sample of the reconstructed
+        field at its centre, which is the historical behaviour. Such a map carries the
+        input box's own cell window but *not* the HEALPix pixel window, so ``pixwin``
+        must not be divided out of its angular power spectrum.
 
         If ``k > 0``, each pixel is instead averaged over the ``4**k`` sub-pixels of a
-        map with ``nside * 2**k``. The map is then genuinely pixelised, so its angular
-        power spectrum carries the usual pixel window (``healpy.pixwin(nside)**2``) and
-        power above ``l ~ 2 Nside`` is suppressed rather than aliased down. Cost grows
-        as ``4**k``; ``k = 2`` is usually enough.
+        map with ``nside * 2**k``. The pixel window then does apply on top of the cell
+        window, and power above ``l ~ 2 Nside`` is suppressed rather than aliased down.
+        Cost grows as ``4**k``; ``k = 2`` is usually enough.
 
     Other Parameters
     ----------------
@@ -690,10 +849,27 @@ def apply_rsds(
     conserved, and ``n_subcells`` is a real convergence parameter: raising it shrinks
     the cloud-in-cell kernel without anything falling between the output slices.
 
+    **Convention.** Unlike the tiling functions, this one works throughout in terms of
+    *radial cell averages*: a slice is a cell running from edge to edge, and its value is
+    the mean of the field over that cell. That is what makes the displacement
+    mass-conserving and a zero displacement an exact round trip, and it is not optional
+    -- moving material around is only meaningful for a quantity with extent.
+
+    That is consistent with a lightcone built by point-sampling shells **provided the
+    slice spacing is comparable to the cell size of the coeval box**, because the box's
+    own cell window then already supplies about one slice of radial smoothing (the cubic
+    cell window is within 3% of isotropic even at Nyquist, so it acts as a radial top-hat
+    of one cell). If your slices are much coarser than your cells, a point-sampled
+    lightcone is *not* a radial cell average and this function will assume smoothing that
+    is not there: build the lightcone with ``radial_width`` first, using
+    :func:`residual_radial_width` to choose it.
+
     Parameters
     ----------
     field
         The field to apply redshift-space distortions to, shape (nslices, ncoords).
+        Taken as the mean over each radial slice, and returned the same way -- see the
+        convention note above.
     los_displacement
         The line-of-sight "apparent" displacement of the field, in pixel coordinates.
         Equal to ``v / H(z) / cell_size``.

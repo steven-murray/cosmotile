@@ -23,6 +23,13 @@ def cloud_in_cell_coeval(
     Note that the implementation was derived largely from
     https://astro.uchicago.edu/~andrey/Talks/PM/pm.pdf, specially slide 13.
 
+    Notes
+    -----
+    Each cell's value is deposited as a *weight*, so the total is conserved. On a
+    uniform grid that makes the routine agnostic to whether the field is a density (a
+    per-cell mean) or a mass (a per-cell total): the two differ by the constant cell
+    volume, which divides out. :func:`cosmotile.apply_rsds` relies on that equivalence.
+
     Parameters
     ----------
     field
@@ -103,6 +110,10 @@ def cloud_in_cell_los(
     to create a a new, non-regular grid (which we can consider to be "particles"). We
     then use the regular cloud-in-cell interpolation to interpolate the particles back
     on to the regular grid.
+
+    As in :func:`cloud_in_cell_coeval`, values are deposited as weights and the total is
+    conserved, so on this uniform grid a per-cell mean and a per-cell total behave
+    identically.
 
     Parameters
     ----------

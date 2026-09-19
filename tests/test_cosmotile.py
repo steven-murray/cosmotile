@@ -51,8 +51,17 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(ValueError, match="n_radial_samples must be at least 1"):
         call(n_radial_samples=0)
 
-    with pytest.raises(ValueError, match="radial_width must be positive"):
-        call(n_radial_samples=2, radial_width=0.0)
+    with pytest.raises(ValueError, match="radial_width must be non-negative"):
+        call(n_radial_samples=2, radial_width=-1.0)
+
+    with pytest.raises(ValueError, match="radial_width must be less than twice"):
+        call(n_radial_samples=2, radial_width=3.0, distance_to_shell=1.0)
+
+    with pytest.raises(ValueError, match="width must be positive and less than two"):
+        cmt.deconvolve_cell_window(coeval, width=2.0)
+
+    with pytest.raises(ValueError, match="must be non-negative"):
+        cmt.residual_radial_width(-1.0)
 
     with pytest.raises(ValueError, match="subsample_level must be non-negative"):
         next(make_healpix_lightcone_slice(nside=4, subsample_level=-1, coevals=coeval))
