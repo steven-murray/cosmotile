@@ -127,6 +127,105 @@ def test_interpolation_error_falls_with_order(directions: np.ndarray, order: int
     assert error < tolerance
 
 
+@pytest.mark.parametrize("order", range(6))
+def test_prefiltering_does_not_change_the_answer(directions: np.ndarray, order: int) -> None:
+    """``prefilter_coeval`` must only move work, never change the result.
+
+    The spline pre-filter depends on ``(coeval, order)`` alone, so hoisting it out of the
+    per-shell loop has to be *bit*-identical to filtering inside it. Anything weaker --
+    a different boundary condition, a dtype change, a filter applied twice -- shows up
+    here immediately.
+    """
+    box = plane_wave_box((2, 1, 0), 0.4)
+    lat, lon = unit_vectors_to_lonlat(directions)
+    kw = {
+        "latitude": lat,
+        "longitude": lon,
+        "distance_to_shell": 37.3,
+        "interpolation_order": order,
+    }
+
+    raw = next(cmt.make_lightcone_slice(coevals=box, **kw))
+    filtered = cmt.prefilter_coeval(box, order)
+    hoisted = next(cmt.make_lightcone_slice(coevals=filtered, **kw))
+
+    np.testing.assert_array_equal(hoisted, raw)
+
+
+def test_one_prefilter_serves_every_shell(directions: np.ndarray) -> None:
+    """The whole point: one filtered box, reused across many shells, at many radii."""
+    box = plane_wave_box((1, 2, -1), 1.1)
+    lat, lon = unit_vectors_to_lonlat(directions)
+    filtered = cmt.prefilter_coeval(box, 3)
+
+    for radius in (21.0, 37.3, 150.0):
+        kw = {
+            "latitude": lat,
+            "longitude": lon,
+            "distance_to_shell": radius,
+            "interpolation_order": 3,
+        }
+        raw = next(cmt.make_lightcone_slice(coevals=box, **kw))
+        hoisted = next(cmt.make_lightcone_slice(coevals=filtered, **kw))
+        np.testing.assert_array_equal(hoisted, raw)
+
+
+@pytest.mark.parametrize("order", [2, 3])
+def test_prefiltering_twice_would_be_wrong(order: int) -> None:
+    """Why the tag has to suppress the second filter, rather than it being harmless.
+
+    Filtering twice is not a no-op: it corrupts the field. So the tag is load-bearing,
+    not a convenience -- without it, handing a pre-filtered box back to
+    ``make_lightcone_slice`` would silently return the wrong shell.
+    """
+    box = plane_wave_box((2, 1, 0), 0.4)
+    once = np.asarray(cmt.prefilter_coeval(box, order))
+    twice = np.asarray(cmt.prefilter_coeval(once, order))
+
+    assert not np.allclose(once, twice)
+
+
+def test_prefiltered_order_must_match_the_interpolation_order(directions: np.ndarray) -> None:
+    """A box filtered for one order is not a valid input at another.
+
+    This is the one mistake the tag cannot silently absorb: the box genuinely holds the
+    wrong coefficients, and tiling it anyway would return a plausible but wrong shell.
+    """
+    lat, lon = unit_vectors_to_lonlat(directions)
+    slices = cmt.make_lightcone_slice(
+        coevals=cmt.prefilter_coeval(np.zeros((NCELL,) * 3), 3),
+        latitude=lat,
+        longitude=lon,
+        distance_to_shell=37.3,
+        interpolation_order=5,
+    )
+    with pytest.raises(ValueError, match="pre-filtered for order 3"):
+        next(slices)
+
+
+def test_prefilter_coeval_validates_its_order() -> None:
+    box = np.zeros((8, 8, 8))
+    with pytest.raises(TypeError, match="must be an integer"):
+        cmt.prefilter_coeval(box, 3.0)
+    with pytest.raises(ValueError, match="range 0-5"):
+        cmt.prefilter_coeval(box, 6)
+
+
+def test_prefilter_tag_does_not_survive_derived_arrays() -> None:
+    """Anything derived from a pre-filtered box is a plain array again.
+
+    The pre-filter of a slice is not the slice of the pre-filter, so a tag that
+    propagated through views and arithmetic would license genuinely wrong results. Losing
+    it is the safe direction: an untagged array is simply filtered on its own account, so
+    a derived box is correct -- merely not hoisted.
+    """
+    filtered = cmt.prefilter_coeval(np.zeros((8, 8, 8)), 3)
+    assert filtered.spline_order == 3
+    assert filtered[::2].spline_order is None
+    assert (filtered * 2.0).spline_order is None
+    assert np.asarray(filtered).__class__ is np.ndarray
+
+
 def test_order_zero_returns_exact_box_values(directions: np.ndarray) -> None:
     """Nearest-neighbour tiling may only ever return values that are *in* the box.
 
