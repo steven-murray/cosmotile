@@ -26,7 +26,7 @@ HEALPix grid. In words:
 |---|---|---|
 | $\ell \lesssim 2\pi r / L$ | The box fundamental $k_{\min} = 2\pi/L$ | Power is **missing**, by up to 100% |
 | $\ell \gtrsim \pi r / \Delta$ | The Nyquist wavenumber of the box grid | Power is **spurious** (aliasing floor) |
-| $\ell \gtrsim 2 N_{\rm side}$ | Sampling at HEALPix pixel centres | Small-scale power aliases into large scales |
+| $\ell \gtrsim 2 N_{\rm side}$ | The HEALPix grid | Small-scale power aliases down (mitigated by `subsample_level`) |
 | $r / L \gtrsim 1$ | Periodic replication | The same structures recur across the sky |
 
 ```{figure} figures/validity_window.svg
@@ -234,6 +234,12 @@ many orders of magnitude above the truth. Treat $\ell > \pi r/\Delta$ as meaning
 if your input spectrum is band-limited well below Nyquist, treat everything above
 $k_{\rm cut} r$ as meaningless.
 
+Part of that floor is not the box at all but the *pixel*: structure smaller than a
+HEALPix pixel, folded down by sampling at pixel centres. Averaging over the pixel removes
+that part (see below) and drops the floor by roughly a factor of four; what is left is
+power the interpolation genuinely places at those multipoles, which no amount of
+averaging can help with.
+
 ### Choosing the interpolation order
 
 ```{figure} figures/interpolation_order.svg
@@ -294,20 +300,69 @@ the pre-filter of a derived array is not the derived pre-filtered array — a de
 therefore still correct, just filtered on its own account rather than hoisted, so re-run
 `prefilter_coeval` on it if you want the saving back.
 
-### Choosing `nside`
+### Sampling versus averaging: `subsample_level`
 
-The tiling samples the field *at pixel centres*; it does not average over pixels
-([issue #465](https://github.com/steven-murray/cosmotile/issues/465)). So you
-should **not** divide out the HEALPix pixel window — instead, choose `nside` high enough
-that you are not aliasing. A good rule is to make the pixel scale comparable to the cell
-size projected onto the shell,
+By default a lightcone value is a **point sample** of the coeval field at the pixel
+centre. That is not the same object as a pixelised map, and the difference has teeth:
+the HEALPix pixel window does not apply to it, so you must **not** divide $w_\ell$ out;
+and power above $\ell \sim 2 N_{\rm side}$ does not vanish, it aliases back down.
+
+Passing `subsample_level=k` to {func}`~cosmotile.make_healpix_lightcone_slice` instead
+averages each pixel over the $4^k$ sub-pixels of an $N_{\rm side} 2^k$ map. Those
+sub-pixels are equal-area and tile their parent exactly, so the mean over them converges
+on the true pixel average, and the map becomes genuinely pixelised.
+
+```{figure} figures/pixel_window.svg
+:alt: Ratio of averaged to sampled angular power, against multipole, for three sub-sample levels
+
+The angular power of an averaged map divided by that of the sampled map built from the
+same box. By $k=2$ the ratio is the HEALPix pixel window $w_\ell^2$ to about 1%, and by
+$k=3$ to a few parts in a thousand. The comparison is between two maps of the same
+realisation, so the input field's sample variance cancels out of it entirely.
+```
+
+What that buys you:
+
+- **The pixel window applies.** Compare a measured $C_\ell$ against
+  $C_\ell^{\rm theory} w_\ell^2$, or divide $w_\ell^2$ out of the measurement. On a
+  sampled map both are wrong.
+- **Less aliasing.** The spurious floor above the spectral cut-off (above) drops by
+  roughly a factor of four at $k=2$ — the part of it that was sub-pixel structure folded
+  down by sampling, as distinct from the part the interpolation genuinely puts there.
+- **Cost.** $4^k$ interpolations per pixel. $k=2$ is usually the sweet spot; $k=1$ is
+  visibly short of the exact pixel average.
+
+Averaging does not remove the need to choose `nside` sensibly. A good rule is still to
+make the pixel scale comparable to the cell size projected onto the shell,
 
 $$
 N_{\rm side} \gtrsim \frac{r}{2\Delta},
 $$
 
 which follows from a HEALPix pixel subtending roughly $0.52/N_{\rm side}$ radians. Then
-trust only $\ell \ll 2 N_{\rm side}$.
+trust only $\ell \ll 2 N_{\rm side}$ — beyond that the map cannot represent the signal
+whether or not it is aliased.
+
+### Radial averaging
+
+The same argument applies along the line of sight: a lightcone shell has the thickness
+of the slice spacing, not zero. {func}`~cosmotile.make_lightcone_slice` takes
+`radial_width` (the thickness, in cells) and `n_radial_samples`, and averages the field
+over $[r - w/2,\, r + w/2]$ with Gauss–Legendre nodes weighted by the $r^2$ volume
+element. Four nodes already integrate that exactly for anything the box can resolve.
+
+A radial mode $k$ is then suppressed by the top-hat transform $\mathrm{sinc}(kw/2)$,
+with a correction of order $(w/r)^2$ from the volume weighting.
+
+Averaging radially turns the slice into a projection with a normalised radial kernel
+$q(r)$ — the $q$ of "Why not Limber?" above — so the thin-shell $C_\ell$ no longer
+describes it: $j_\ell^2(kr)$ must be replaced by
+$\left|\int \mathrm{d}r \, q(r) \, j_\ell(kr)\right|^2$. One slice is far too narrow a
+kernel for Limber to apply, but the prediction to compare against does change, so do not
+average radially and then check against the thin-shell formula.
+
+Both defaults (`subsample_level=0`, `n_radial_samples=1`) reproduce point sampling
+exactly, so nothing changes unless you ask for it.
 
 ## Replication
 
@@ -356,19 +411,37 @@ distance $d$ with displacement $u$ is observed at $d - u$. This matches the outp
 that the flow multi-streams; the cloud-in-cell deposition still conserves mass, but the
 result is no longer the continuity solution.
 
-**`n_subcells` is not a convergence knob.** It refines the grid used for the
-displacement, but the final step *samples* that fine grid at the output slices rather
-than averaging over them. Raising it therefore sharpens the deposited field without
-improving the answer, and in extreme cases makes it worse: material concentrated into a
-single sub-cell that no output slice sits on disappears entirely. The default of 4 is
-reasonable; there is nothing to gain from 32. This is tracked as
-[issue #465](https://github.com/steven-murray/cosmotile/issues/465), along with the
-related point that the angular direction samples pixel centres rather than averaging over
-the pixel.
+**`n_subcells` is a convergence knob.** It sets how finely the line-of-sight grid is
+refined before the displacement is applied. The displaced grid is then *integrated* over
+the radial extent of each output slice, so every parcel lands in exactly one output cell
+(split in proportion where it straddles two) and mass is conserved. Raising `n_subcells`
+therefore shrinks the cloud-in-cell kernel without anything falling between the slices.
 
-Residual error from the cloud-in-cell kernel is a smoothing of roughly one output slice,
-and it scales with the amplitude of the density response — so oversample the line of
-sight if you need the small-scale redshift-space structure.
+```{figure} figures/n_subcells_convergence.svg
+:alt: RMS error against the continuity solution, falling with n_subcells
+
+RMS error of `apply_rsds` against $\rho_s = \rho_r / (1 - u')$ for a sinusoidal
+displacement of amplitude $A$, over 256 slices, interior only. The error falls roughly
+as $1/n$. Before this was fixed the same measurement was flat — 0.039, 0.048, 0.047,
+0.041, 0.039 at $n = 1, 2, 4, 8, 16$ for $A = 2$ — because the final step sampled the
+refined grid instead of integrating over the output cell
+([issue #465](https://github.com/steven-murray/cosmotile/issues/465)).
+```
+
+The default of 4 gives about 1% RMS accuracy for a displacement of one or two cells.
+Raise it if your velocity field varies on the scale of a single slice; there is no
+reason to go past ~16 unless the rest of your pipeline is that accurate.
+
+The refinement is *conservative*: each fine cell takes the value of the output slice it
+lies in, so with zero displacement the whole refine–displace–average round trip is
+exactly the identity, at any `n_subcells`. The residual error is therefore the
+cloud-in-cell kernel alone, which is a smoothing of roughly one sub-cell.
+
+**Padding at the ends.** To catch material displaced in from beyond the grid, the field
+and the displacement are extrapolated past the first and last slices. Mass is conserved
+exactly for parcels that stay on the grid, but the end slices can gain material from
+that extrapolated region — so treat the outermost few slices of a lightcone as you would
+any other boundary.
 
 ## Reproducing these figures
 

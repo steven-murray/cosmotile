@@ -258,6 +258,94 @@ def figure_angular_scale() -> None:
     plt.close(fig)
 
 
+def figure_pixel_window() -> None:
+    """Angular averaging makes the HEALPix pixel window apply, instead of aliasing."""
+    ncell, kcut, nside, lmax = 64, np.pi / 4, 32, 64
+    radius = 80.0
+    pk = band_limited_powerlaw(-2.0, kcut)
+    ells = np.arange(lmax + 1)
+    pixwin = hp.pixwin(nside)[: lmax + 1] ** 2
+
+    nseed = 4
+    spectra = {level: np.zeros(lmax + 1) for level in (0, 1, 2, 3)}
+    for seed in range(nseed):
+        box = gaussian_box(ncell, pk, seed)
+        for level, total in spectra.items():
+            shell = next(
+                cmt.make_healpix_lightcone_slice(
+                    nside=nside,
+                    subsample_level=level,
+                    coevals=box,
+                    distance_to_shell=radius,
+                )
+            )
+            total += hp.anafast(shell, lmax=lmax) / nseed
+
+    fig, axis = plt.subplots(figsize=(5.8, 4.0), layout="constrained")
+    for level in (1, 2, 3):
+        axis.plot(
+            ells[2:],
+            (spectra[level] / spectra[0])[2:],
+            lw=1.2,
+            label=rf"$k={level}$ ($4^{level}$ sub-samples)",
+        )
+    axis.plot(ells[2:], pixwin[2:], "k--", lw=1.2, label=r"HEALPix $w_\ell^2$")
+
+    # Stop at l = 2 Nside: beyond it ``anafast`` cannot measure the map anyway.
+    axis.set_xlabel(r"multipole $\ell$")
+    axis.set_ylabel(r"averaged $C_\ell$ / sampled $C_\ell$")
+    axis.set_xlim(2, lmax)
+    axis.set_ylim(0.6, 1.05)
+    axis.legend(frameon=False, fontsize=8, loc="lower left")
+    axis.set_title(rf"Averaging over the pixel, $N_{{\rm side}}={nside}$", fontsize=9)
+
+    fig.savefig(OUT / "pixel_window.svg")
+    plt.close(fig)
+
+
+def figure_n_subcells_convergence() -> None:
+    """RMS error of ``apply_rsds`` against the 1D continuity solution."""
+    from astropy import units as un
+    from scipy.interpolate import interp1d
+
+    nslice, wavelength = 256, 64.0
+    distance = (1000 + np.arange(nslice, dtype=float)) * un.pixel
+    radial = np.arange(nslice, dtype=float)
+    interior = slice(40, nslice - 40)
+    subcells = np.array([1, 2, 4, 8, 16, 32, 64])
+
+    fig, axis = plt.subplots(figsize=(5.6, 4.0), layout="constrained")
+    for amplitude in (1.0, 2.0):
+        displacement = amplitude * np.sin(2 * np.pi * radial / wavelength)
+        gradient = amplitude * (2 * np.pi / wavelength) * np.cos(2 * np.pi * radial / wavelength)
+        exact = interp1d(
+            radial - displacement, 1.0 / (1.0 - gradient), bounds_error=False, fill_value=np.nan
+        )(radial)
+
+        errors = []
+        for n in subcells:
+            out = cmt.apply_rsds(
+                field=np.ones((nslice, 1)),
+                los_displacement=displacement[:, None] * un.pixel,
+                distance=distance,
+                n_subcells=int(n),
+            )
+            errors.append(np.sqrt(np.mean((out[interior, 0] - exact[interior]) ** 2)))
+        axis.loglog(subcells, errors, "o-", ms=3.5, lw=1.2, label=f"$A = {amplitude:g}$ cells")
+
+    axis.loglog(subcells, 0.04 / subcells, "k:", lw=0.9, label=r"$\propto 1/n$")
+    axis.set_xlabel("n_subcells")
+    axis.set_ylabel("RMS error vs continuity solution")
+    axis.set_xticks(subcells)
+    axis.set_xticklabels([str(n) for n in subcells])
+    axis.minorticks_off()
+    axis.legend(frameon=False, fontsize=8)
+    axis.set_title("Convergence of the redshift-space mapping", fontsize=9)
+
+    fig.savefig(OUT / "n_subcells_convergence.svg")
+    plt.close(fig)
+
+
 def main() -> None:
     """Build every figure."""
     OUT.mkdir(exist_ok=True)
@@ -265,6 +353,8 @@ def main() -> None:
     figure_interpolation_order()
     figure_deficit_versus_radius()
     figure_angular_scale()
+    figure_pixel_window()
+    figure_n_subcells_convergence()
     print(f"wrote figures to {OUT}")
 
 

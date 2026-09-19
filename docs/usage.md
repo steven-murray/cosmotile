@@ -94,6 +94,30 @@ Passing a different `rotation` and `origin` per shell yields an apparently diffe
 realisation from the same box, at the cost of breaking the correlation along the line of
 sight. See [Accuracy and Limitations](accuracy) for when that trade is worth making.
 
+## Averaging over the pixel instead of sampling it
+
+By default each value is a single sample of the coeval field at the pixel centre, at
+exactly the shell radius. To average over the solid angle and radial extent the pixel
+really covers, pass `subsample_level` (angular) and `radial_width` with
+`n_radial_samples` (radial):
+
+```python
+(shell,) = cosmotile.make_healpix_lightcone_slice(
+    nside=nside,
+    subsample_level=2,  # average over the 4**2 sub-pixels of nside * 2**2
+    coevals=box,
+    distance_to_shell=100.0,
+    radial_width=5.0,  # the slice thickness, in cells
+    n_radial_samples=4,
+)
+```
+
+This costs `4**subsample_level * n_radial_samples` interpolations per pixel, and it makes
+the output a genuinely pixelised map — so the HEALPix pixel window then applies to its
+angular power spectrum, whereas on a sampled map it must not be divided out. Both
+defaults reproduce point sampling exactly. See
+[Accuracy and Limitations](accuracy) for the details.
+
 ## Redshift-space distortions
 
 Project the peculiar velocity field onto the line of sight, then displace the field
@@ -139,4 +163,5 @@ $$
 
 for a box of length $L$ and cell size $\Delta$ at shell radius $r$.
 [Accuracy and Limitations](accuracy) works through where this comes from, how badly it
-fails outside that window, and how to choose `nside` and `interpolation_order`.
+fails outside that window, and how to choose `nside`, `interpolation_order`,
+`subsample_level` and `n_subcells`.

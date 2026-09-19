@@ -45,8 +45,17 @@ def test_make_lightcone_slice_inputs() -> None:
     with pytest.raises(ValueError, match="latitude and longitude must have the same shape"):
         call(latitude=np.concatenate((lat, [0])))
 
-    with pytest.raises(ValueError, match="latitude and longitude must be 1D arrays"):
-        call(latitude=np.zeros((11, 11)), longitude=np.zeros((11, 11)))
+    with pytest.raises(ValueError, match="latitude and longitude must be 1D or 2D arrays"):
+        call(latitude=np.zeros((2, 11, 11)), longitude=np.zeros((2, 11, 11)))
+
+    with pytest.raises(ValueError, match="n_radial_samples must be at least 1"):
+        call(n_radial_samples=0)
+
+    with pytest.raises(ValueError, match="radial_width must be positive"):
+        call(n_radial_samples=2, radial_width=0.0)
+
+    with pytest.raises(ValueError, match="subsample_level must be non-negative"):
+        next(make_healpix_lightcone_slice(nside=4, subsample_level=-1, coevals=coeval))
 
     with pytest.raises(ValueError, match="latitude must be between -pi/2 and pi/2"):
         call(latitude=np.arange(11))
@@ -271,11 +280,14 @@ def test_apply_rsds_edges() -> None:
             field=field, los_displacement=los, distance=distance, n_subcells=n_subcells
         )
 
-    # The near slice moves towards the observer and the far slice away from it, so both
-    # leave the grid and nothing is left.
+    # The near slice moves towards the observer and the far slice away from it. That is
+    # a diverging flow with ``u' = -2`` about distance 10.5, so continuity predicts a
+    # uniform ``1 / (1 - u') = 1/3`` across both cells once the sub-grid resolves it.
+    # The approach is oscillatory because the stretched parcels land as a comb that the
+    # output cells only gradually average over.
     losv = np.ones((2, 10)) * un.pixel
     losv[1] = -1 * un.pixel
-    assert np.all(apply(losv) == 0)
+    assert abs(apply(losv, n_subcells=256).mean() - 1 / 3) < 0.01
 
     # Reversed, the two slices simply swap places, so the uniform field is preserved.
     losv = np.ones((2, 10)) * un.pixel
@@ -286,15 +298,14 @@ def test_apply_rsds_edges() -> None:
     # the shift, so everything is translated straight off the near end.
     assert np.all(apply(3 * np.ones((2, 10)) * un.pixel) == 0)
 
-    # Both slices converge on distance 10.5, exactly between the two grid points. At
-    # n_subcells=1 the cloud-in-cell kernel splits that evenly back onto both slices...
+    # Both slices converge on distance 10.5, exactly on the boundary between the two
+    # output cells. The uniform field is preserved: half of the mass falls either side,
+    # and that is true at every sub-cell refinement, because the final step integrates
+    # over the output cell rather than sampling its centre. (Sampling gave 1 at
+    # ``n_subcells=1`` and identically zero at ``n_subcells=4`` -- GH #465.)
     losv = np.array([-0.5 * np.ones(10), 0.5 * np.ones(10)]) * un.pixel
-    assert np.all(apply(losv, n_subcells=1) == 1)
-
-    # ...but on a finer sub-grid the material lands wholly in a sub-cell that no output
-    # slice sits on, and the final step *samples* the sub-grid rather than averaging over
-    # it, so it vanishes. Raising ``n_subcells`` is not free: see the accuracy docs.
-    assert np.all(apply(losv, n_subcells=4) == 0)
+    for n_subcells in (1, 2, 4, 8, 16):
+        np.testing.assert_allclose(apply(losv, n_subcells=n_subcells), 1)
 
 
 def test_apply_rsds_irregular_distance_grid() -> None:
@@ -363,3 +374,27 @@ def test_transform_with_different_origin_types() -> None:
     )
 
     np.testing.assert_equal(tuple_origin, array_origin)
+
+
+def test_transform_to_pixel_coords_input_validation() -> None:
+    """``transform_to_pixel_coords`` is public, so it validates its own coordinates.
+
+    :func:`~cosmotile.make_lightcone_slice_interpolator` accepts 2D ``(n_subsamples,
+    npix)`` coordinate arrays and flattens them before calling this, so these two checks
+    are no longer reachable through it -- but a caller reaching for the transform
+    directly still has to be told when the arrays do not line up.
+    """
+    latitude = np.zeros(7)
+    longitude = np.linspace(0, 2 * np.pi, 7)
+
+    with pytest.raises(ValueError, match="latitude and longitude must have the same shape"):
+        cmt.transform_to_pixel_coords(
+            comoving_radius=10, latitude=latitude[:-1], longitude=longitude
+        )
+
+    with pytest.raises(ValueError, match="latitude and longitude must be 1D arrays"):
+        cmt.transform_to_pixel_coords(
+            comoving_radius=10,
+            latitude=latitude.reshape(1, 7),
+            longitude=longitude.reshape(1, 7),
+        )

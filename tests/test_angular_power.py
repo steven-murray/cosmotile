@@ -65,11 +65,18 @@ def band_scatter(lo: int, hi: int) -> float:
     return float(np.sqrt(2 / np.sum(2 * np.arange(lo, hi) + 1)))
 
 
-def healpix_shell(box: np.ndarray, radius: float, order: int = 1) -> np.ndarray:
+def healpix_shell(
+    box: np.ndarray,
+    radius: float,
+    order: int = 1,
+    nside: int = NSIDE,
+    subsample_level: int = 0,
+) -> np.ndarray:
     """Tile ``box`` onto a HEALPix shell of the given radius."""
     return next(
         cmt.make_healpix_lightcone_slice(
-            nside=NSIDE,
+            nside=nside,
+            subsample_level=subsample_level,
             coevals=box,
             distance_to_shell=radius,
             interpolation_order=order,
@@ -77,10 +84,17 @@ def healpix_shell(box: np.ndarray, radius: float, order: int = 1) -> np.ndarray:
     )
 
 
-def measured_cl(box: np.ndarray, radius: float, order: int = 1) -> np.ndarray:
+def measured_cl(
+    box: np.ndarray,
+    radius: float,
+    order: int = 1,
+    nside: int = NSIDE,
+    subsample_level: int = 0,
+    lmax: int = LMAX,
+) -> np.ndarray:
     """Angular power spectrum of the tiled shell."""
     hp = pytest.importorskip("healpy")
-    return hp.anafast(healpix_shell(box, radius, order), lmax=LMAX)
+    return hp.anafast(healpix_shell(box, radius, order, nside, subsample_level), lmax=lmax)
 
 
 def predicted_cl(
@@ -353,3 +367,120 @@ def test_structure_is_exactly_replicated_at_lattice_separations(multiple: int) -
     # And it is not simply that the box is nearly constant along those directions.
     _ = rng  # keep the generator referenced for clarity
     assert box.std() > 0.5
+
+
+# ---------------------------------------------------------------------------------
+# Angular averaging (GH #465) -- with ``subsample_level > 0`` the map stops being a
+# sampled field and becomes a pixelised one, which changes its statistics in two
+# specific, checkable ways.
+# ---------------------------------------------------------------------------------
+PIXWIN_NSIDE = 32
+PIXWIN_LMAX = 60
+PIXWIN_BANDS = ((10, 16), (16, 24), (24, 34), (34, 46), (46, 60))
+
+
+def test_angular_averaging_applies_the_healpix_pixel_window() -> None:
+    """Averaging over sub-pixels must multiply the measured ``C_l`` by ``pixwin^2``.
+
+    This is the sharpest available statement of what GH #465 asked for. Comparing the
+    averaged map against the *sampled* map of the same realisation cancels the input
+    field's sample variance and the chi-squared scatter of the ``a_lm`` -- both maps are
+    built from the same box with the same phases -- so the only thing left is the pixel
+    window, and it can be checked at the sub-percent level rather than the few-percent
+    level a comparison against theory would allow.
+
+    ``nside = 32`` is chosen so that ``pixwin^2`` falls to 0.77 by ``l = 60``: the
+    correction being tested is a 23% effect, not a rounding error.
+    """
+    hp = pytest.importorskip("healpy")
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    box = gaussian_box(NCELL, pk, 0)
+    radius = 80.0
+
+    kw = {"nside": PIXWIN_NSIDE, "lmax": PIXWIN_LMAX}
+    sampled = measured_cl(box, radius, **kw)
+    pixwin = hp.pixwin(PIXWIN_NSIDE)[: PIXWIN_LMAX + 1] ** 2
+
+    # The window must be a real correction over the band being tested, or the test is
+    # asserting nothing.
+    assert band_average(pixwin, 46, 60) < 0.8
+
+    # Sub-pixel averaging converges on the exact pixel average, so the agreement must
+    # improve with level. Level 3 is 64 sub-samples per pixel.
+    residuals = []
+    for level in (1, 2, 3):
+        averaged = measured_cl(box, radius, subsample_level=level, **kw)
+        ratios = np.array(
+            [
+                band_average(averaged, lo, hi) / band_average(sampled * pixwin, lo, hi)
+                for lo, hi in PIXWIN_BANDS
+            ]
+        )
+        residuals.append(np.abs(ratios - 1).max())
+
+    assert residuals[2] < 0.01, f"level-3 residual {residuals[2]:.4f}"
+    assert residuals[0] > residuals[1] > residuals[2], f"not converging: {residuals}"
+
+
+def test_averaged_angular_power_matches_theory_times_the_pixel_window() -> None:
+    """End to end: ``C_l`` of an averaged map is the thin-shell theory times ``pixwin^2``.
+
+    The previous test cancels the theory out; this one does not. It asserts the whole
+    chain -- box modes, tiling, pixel average -- against
+    ``(4 pi / V) sum_k P(k) W(k)^2 j_l^2(kr) * pixwin_l^2``, at the same tolerances
+    :func:`test_angular_power_matches_theory` uses for the sampled map. Dividing the
+    pixel window *out* of a sampled map would be wrong; multiplying it *into* the theory
+    for an averaged map is right, and that asymmetry is the practical point of GH #465.
+    """
+    hp = pytest.importorskip("healpy")
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    ells = np.arange(PIXWIN_LMAX + 1)
+    radius = 80.0
+    pixwin = hp.pixwin(PIXWIN_NSIDE)[: PIXWIN_LMAX + 1] ** 2
+
+    ratios = []
+    for seed in SEEDS:
+        box = gaussian_box(NCELL, pk, seed)
+        cl = measured_cl(box, radius, nside=PIXWIN_NSIDE, subsample_level=2, lmax=PIXWIN_LMAX)
+        theory = predicted_cl(box, radius, pk, ells) * pixwin
+        ratios.append(
+            [band_average(cl, lo, hi) / band_average(theory, lo, hi) for lo, hi in PIXWIN_BANDS]
+        )
+
+    ratios = np.array(ratios)
+    tolerance = np.array([4 * band_scatter(lo, hi) for lo, hi in PIXWIN_BANDS])
+    assert np.all(np.abs(ratios - 1) < tolerance), (
+        f"per-band ratios out of tolerance:\n{np.round(ratios, 3)}\ntolerance: "
+        f"{np.round(tolerance, 3)}"
+    )
+    assert abs(ratios.mean() - 1) < 0.06, f"mean ratio {ratios.mean():.4f}"
+
+
+def test_angular_averaging_suppresses_the_aliasing_floor() -> None:
+    """Averaging over the pixel must knock down the floor of the previous test.
+
+    :func:`test_aliasing_floor_above_the_spectral_cutoff` measures spurious power above
+    the input's spectral cut-off. Part of that floor is sub-pixel structure in the
+    reconstructed field folded down by sampling at pixel centres, and averaging over the
+    pixel removes it before it can alias. The remainder is power the trilinear
+    reconstruction genuinely puts at those multipoles, which averaging only suppresses by
+    the pixel window (0.87 here), so the floor drops sharply but does not vanish.
+    """
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    radius = 80.0
+    cutoff_ell = int(KCUT * radius)
+    above = slice(cutoff_ell + 14, LMAX + 1)
+    ells = np.arange(LMAX + 1)
+
+    drops = []
+    for seed in SEEDS:
+        box = gaussian_box(NCELL, pk, seed)
+        theory = predicted_cl(box, radius, pk, ells)
+        floors = [
+            measured_cl(box, radius, subsample_level=level)[above].min() / theory[above].max()
+            for level in (0, 2)
+        ]
+        assert floors[0] > 50, "the sampled map must still show the documented floor"
+        drops.append(floors[0] / floors[1])
+
+    assert min(drops) > 3, f"floor barely moved: {np.round(drops, 2)}"
