@@ -15,6 +15,7 @@ from scipy.ndimage import map_coordinates, spline_filter
 from scipy.spatial.transform import Rotation
 
 from . import _version
+from . import theory as theory
 from .cic import cloud_in_cell_los
 
 __version__ = _version.version

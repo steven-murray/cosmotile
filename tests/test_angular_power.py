@@ -26,15 +26,17 @@ import numpy as np
 import pytest
 
 import cosmotile as cmt
+from cosmotile.theory import (
+    continuum_angular_power,
+    discrete_angular_power,
+    interpolation_window,
+)
 
 from .conftest import (
     band_average,
     band_limited_powerlaw,
-    continuum_angular_power,
     gaussian_box,
-    linear_interp_window,
     mode_grid,
-    theory_angular_power,
     unit_vectors_to_lonlat,
 )
 
@@ -97,7 +99,7 @@ def predicted_cl(
     Pass ``box=None`` to use the ensemble ``P(k)`` instead.
     """
     kmag, kvec = mode_grid(ncell)
-    window = linear_interp_window(kvec) ** 2
+    window = interpolation_window(kvec) ** 2
     volume = float(ncell) ** 3
 
     if box is None:
@@ -106,7 +108,7 @@ def predicted_cl(
         weight = volume * np.abs(np.fft.fftn(box) / box.size) ** 2 * window
 
     nonzero = kmag > 0
-    return theory_angular_power(
+    return discrete_angular_power(
         kmag[nonzero].ravel(), weight[nonzero].ravel(), volume, radius, ells
     )
 

@@ -42,20 +42,22 @@ an aliasing floor.
 
 ## Computing the theoretical expectation
 
-This section derives the two theory curves in the figure above, and the machinery is in
-`tests/conftest.py` if you want to reproduce them for your own box.
+This section derives the two theory curves in the figure above. The machinery is
+{mod}`cosmotile.theory`, whose three functions are the three ingredients below, so you
+can reproduce them for your own box rather than taking the numbers here on trust.
 
 Expand a plane wave in spherical harmonics and project onto a shell of radius $r$. For a
 field with three-dimensional power spectrum $P(k)$, the angular power spectrum of the
 values on that shell is
 
 $$
-C_\ell = \frac{2}{\pi} \int \mathrm{d}k \; k^2 \, P(k) \, j_\ell^2(kr).
+C_\ell = \frac{2}{\pi} \int \mathrm{d}k \; k^2 \, P(k) \, j_\ell^2(kr),
 $$
 
-This is exact for a geometrically thin shell, and it is the **infinite box** (dotted)
-curve in the figure above: every mode contributes, including the arbitrarily long
-wavelengths no finite simulation contains.
+which is {func}`~cosmotile.theory.continuum_angular_power`. This is exact for a
+geometrically thin shell, and it is the **infinite box** (dotted) curve in the figure
+above: every mode contributes, including the arbitrarily long wavelengths no finite
+simulation contains.
 
 A *periodic box* contains only the discrete modes $\mathbf{k} = 2\pi\mathbf{j}/L$, so the
 prediction for a tiled box is the corresponding sum,
@@ -65,11 +67,12 @@ C_\ell = \frac{4\pi}{V} \sum_{\mathbf{k}} P(k) \, |W(\mathbf{k})|^2 \, j_\ell^2(
 \qquad V = L^3,
 $$
 
-where $W$ is the interpolation kernel's Fourier response, given under "The interpolation
-kernel" below. This is the **box modes** (dashed) curve. The two expressions differ only
-in replacing an integral over all $k$ by a sum over the modes the box actually has, and
-that difference *is* the finite-box error — everything in the next section follows from
-it.
+which is {func}`~cosmotile.theory.discrete_angular_power`. Here $W$ is the interpolation
+kernel's Fourier response, {func}`~cosmotile.theory.interpolation_window`, given under
+"The interpolation kernel" below. This is the **box modes** (dashed) curve. The two
+expressions differ only in replacing an integral over all $k$ by a sum over the modes the
+box actually has, and that difference *is* the finite-box error — everything in the next
+section follows from it.
 
 ### Why not Limber?
 
@@ -117,6 +120,51 @@ correction by $\ell = 40$. The closed form is still useful as an independent che
 your pipeline's normalisation in the regime $\ell \ll k_{\rm cut} r$, and
 `tests/test_angular_power.py` verifies both it and the truncation correction directly.
 
+### Working it out for your own box
+
+All three functions work in **cell units**: the cell size is unity, so the box length is
+$L = N$, the volume is $V = N^3$, wavenumbers are $k = 2\pi j / N$ and the distance to
+the shell is in cells. The mode grid is three lines of {func}`numpy.fft.fftfreq`, kept
+broadcastable so that only $|k|$ is ever materialised:
+
+```python
+import numpy as np
+from cosmotile.theory import (
+    continuum_angular_power,
+    discrete_angular_power,
+    interpolation_window,
+)
+
+ncell, radius, order = 128, 200.0, 1  # cells, cells, interpolation_order
+ells = np.arange(2, 301)
+
+
+def pk(k):  # your 3D power spectrum, in cell units
+    return k**-2.0
+
+
+k1 = 2 * np.pi * np.fft.fftfreq(ncell)
+kvec = (k1[:, None, None], k1[None, :, None], k1[None, None, :])
+kmag = np.sqrt(sum(k**2 for k in kvec))
+window = interpolation_window(kvec, order=order) ** 2
+
+nonzero = kmag > 0  # the k = 0 mode carries no C_l
+kflat = kmag[nonzero].ravel()
+weight = pk(kflat) * window[nonzero].ravel()
+
+predicted = discrete_angular_power(kflat, weight, float(ncell) ** 3, radius, ells)
+unbounded = continuum_angular_power(pk, radius, ells, kmax=np.pi)
+
+deficit = predicted / unbounded  # what your box is missing, per multipole
+```
+
+`predicted` is what a shell tiled from *any* box with that $P(k)$ should have, and
+`unbounded` is what an infinite box would give; their ratio is the first figure on this
+page. Passing $V\,|\delta_\mathbf{k}|^2$ from an actual box as `weight`, instead of the
+ensemble $P(k)$, predicts that individual realisation and removes its sample variance
+from the comparison — which is how the tests in `tests/test_angular_power.py` pin the
+tiling down to a few percent.
+
 ## Large scales: the box fundamental
 
 The box has no modes below $k_{\min} = 2\pi/L$, and $j_\ell^2(kr)$ peaks at $kr \approx
@@ -154,7 +202,21 @@ $$
 W(\mathbf{k}) = \prod_i \mathrm{sinc}^2(k_i/2).
 $$
 
-The mean-square response, averaged over sub-cell offsets, is
+For a general spline order $p$ the kernel is the order-$p$ B-spline, and orders above 1
+are additionally pre-filtered so that the reconstruction passes through the samples, so
+
+$$
+W(\mathbf{k}) = \prod_i \frac{\mathrm{sinc}^{p+1}(k_i/2)}{b_p(k_i)},
+\qquad
+b_p(k) = \sum_n \beta^p(n)\, e^{-ikn},
+$$
+
+with $\beta^p$ the B-spline itself; $b_p \equiv 1$ for $p = 0$ and $p = 1$, which
+recovers the expression above. {func}`~cosmotile.theory.interpolation_window` evaluates
+this for any order `cosmotile` can interpolate with, and `tests/test_theory.py` checks it
+against what the interpolation actually does to a single Fourier mode.
+
+The mean-square response of the trilinear kernel, averaged over sub-cell offsets, is
 $\prod_i (2 + \cos k_i)/3$, which is what the variance of a tiled shell is suppressed by.
 `tests/test_correlations.py` checks that this prediction holds to a few percent, so the
 suppression is understood rather than merely tolerated: if you need the small-scale
@@ -282,4 +344,5 @@ sight if you need the small-scale redshift-space structure.
 python docs/make_accuracy_figures.py
 ```
 
-Requires the `dev` extra (which pulls in `powerbox` and `healpy`) plus `matplotlib`.
+Requires the `dev` extra (which pulls in `powerbox` and `healpy`) plus `matplotlib`. The
+predictions themselves come from {mod}`cosmotile.theory` and need neither.

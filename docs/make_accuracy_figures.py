@@ -21,16 +21,14 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 import cosmotile as cmt
+from cosmotile.theory import (
+    continuum_angular_power,
+    discrete_angular_power,
+    interpolation_window,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tests"))
-from conftest import (
-    band_limited_powerlaw,
-    continuum_angular_power,
-    gaussian_box,
-    linear_interp_window,
-    mode_grid,
-    theory_angular_power,
-)
+from conftest import band_limited_powerlaw, gaussian_box, mode_grid
 
 OUT = Path(__file__).parent / "figures"
 mpl.rcParams.update({"figure.dpi": 110, "font.size": 9, "savefig.bbox": "tight"})
@@ -44,7 +42,7 @@ def figure_validity_window() -> None:
     ells = np.arange(lmax + 1)
 
     kmag, kvec = mode_grid(ncell)
-    window = linear_interp_window(kvec) ** 2
+    window = interpolation_window(kvec) ** 2
     nonzero = kmag > 0
 
     measured = np.zeros(lmax + 1)
@@ -56,7 +54,7 @@ def figure_validity_window() -> None:
         )
         measured += hp.anafast(shell, lmax=lmax) / nseed
 
-    discrete = theory_angular_power(
+    discrete = discrete_angular_power(
         kmag[nonzero].ravel(),
         (pk(kmag) * window)[nonzero].ravel(),
         float(ncell) ** 3,

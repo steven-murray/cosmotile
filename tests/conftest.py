@@ -13,8 +13,8 @@ The Fourier convention used throughout (and matched by :func:`gaussian_box`) is
     \qquad
     \langle |\delta_{\mathbf{k}}|^2 \rangle = P(k) / V,
 
-with :math:`V = L^3`. This is the convention in which the angular power spectrum of a
-thin shell takes the familiar form implemented by :func:`theory_angular_power`.
+with :math:`V = L^3`. This is the same convention as :mod:`cosmotile.theory`, which
+ships the closed-form angular-power predictions these tests are compared against.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from collections.abc import Callable
 
 import numpy as np
 import pytest
-from scipy.special import spherical_jn
 
 
 # ---------------------------------------------------------------------------------
@@ -72,7 +71,7 @@ def band_limited_powerlaw(
 
 
 # ---------------------------------------------------------------------------------
-# Mode grids and interpolation windows
+# Mode grids
 # ---------------------------------------------------------------------------------
 def mode_grid(n: int) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """Return ``(k_magnitude, (kx, ky, kz))`` for the FFT modes of an ``n**3`` box.
@@ -87,110 +86,9 @@ def mode_grid(n: int) -> tuple[np.ndarray, tuple[np.ndarray, np.ndarray, np.ndar
     return np.sqrt(kvec[0] ** 2 + kvec[1] ** 2 + kvec[2] ** 2), kvec
 
 
-def linear_interp_window(kvec: tuple[np.ndarray, np.ndarray, np.ndarray]) -> np.ndarray:
-    """Fourier-space response of trilinear (order-1) interpolation.
-
-    The order-1 B-spline kernel is the triangle function, whose transform is
-    ``sinc^2(k_i / 2)`` per dimension, so a mode ``k`` in the coeval box appears in the
-    interpolated field suppressed by ``prod_i sinc^2(k_i / 2)``.
-    """
-    # np.sinc(y) = sin(pi y) / (pi y), so sin(k/2)/(k/2) is np.sinc(k / (2 pi)).
-    kx, ky, kz = (np.sinc(k / (2 * np.pi)) ** 2 for k in kvec)
-    return kx * ky * kz
-
-
 # ---------------------------------------------------------------------------------
-# Theory
+# Band powers
 # ---------------------------------------------------------------------------------
-def theory_angular_power(
-    kmag: np.ndarray,
-    weight: np.ndarray,
-    volume: float,
-    radius: float,
-    ells: np.ndarray,
-    nbin: int = 300,
-) -> np.ndarray:
-    r"""Evaluate the angular power spectrum of a thin shell through a periodic box.
-
-    Expanding a plane wave in spherical harmonics gives, for a shell of comoving radius
-    ``r`` cut through a field with power spectrum ``P(k)``,
-
-    .. math::
-
-        C_\ell = \frac{2}{\pi} \int \mathrm{d}k\, k^2 P(k) j_\ell^2(kr).
-
-    A *periodic box* only contains the discrete modes ``k = 2 pi j / L``, so the exact
-    prediction for a tiled box is the corresponding sum,
-
-    .. math::
-
-        C_\ell = \frac{4\pi}{V} \sum_{\mathbf{k}} P(k) j_\ell^2(kr),
-
-    which is what this function evaluates. The two agree in the limit of many modes; the
-    sum is the right thing to compare a tiled box against because it automatically
-    encodes the missing power below the box fundamental.
-
-    Parameters
-    ----------
-    kmag
-        Magnitude of every mode to include (flat array).
-    weight
-        ``P(k)`` for each mode, times any interpolation window, flat and matching
-        ``kmag``.
-    volume
-        The box volume, in cells cubed.
-    radius
-        Shell radius, in cells.
-    ells
-        Multipoles at which to evaluate.
-    nbin
-        Number of ``|k|`` bins used to compress the mode sum. ``j_ell`` depends only on
-        ``|k|``, so modes may be pre-summed in fine bins of ``|k|`` without loss.
-    """
-    edges = np.linspace(kmag.min() * 0.999, kmag.max() * 1.001, nbin + 1)
-
-    # One pass gives both the weight-weighted mean |k| of each bin and the summed
-    # weight in it; empty bins come back as NaN.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # empty bins are expected and dropped below
-        kbin, _, _, wbin = _angular_average()(
-            field=kmag, coords=kmag, bins=edges, weights=weight, average=True
-        )
-
-    good = np.isfinite(kbin) & (wbin > 0)
-    kbin, wbin = kbin[good], wbin[good]
-
-    return np.array(
-        [
-            (4 * np.pi / volume) * np.sum(wbin * spherical_jn(int(ell), kbin * radius) ** 2)
-            for ell in ells
-        ]
-    )
-
-
-def continuum_angular_power(
-    pk: Callable[[np.ndarray], np.ndarray],
-    radius: float,
-    ells: np.ndarray,
-    kmax: float,
-    nk: int = 40000,
-) -> np.ndarray:
-    """Evaluate the continuum integral ``C_l = (2/pi) int dk k^2 P(k) j_l^2(kr)``.
-
-    This is the infinite-box limit of :func:`theory_angular_power`. It is what a tiled
-    box *would* give if it contained every mode, so the difference between the two is
-    exactly the large-scale power a finite box is missing.
-    """
-    k = np.linspace(kmax / nk, kmax, nk)
-    integrand = k**2 * pk(k)
-    return np.array(
-        [
-            (2 / np.pi) * np.trapezoid(integrand * spherical_jn(int(ell), k * radius) ** 2, k)
-            for ell in ells
-        ]
-    )
-
-
 def band_average(cl: np.ndarray, lo: int, hi: int) -> float:
     """``(2l+1)``-weighted mean of ``cl`` over the multipole band ``[lo, hi)``."""
     weights = 2 * np.arange(len(cl)) + 1.0
