@@ -40,7 +40,10 @@ contain. To the right, the true signal has fallen away but the measurement flatt
 an aliasing floor.
 ```
 
-## Where the theory comes from
+## Computing the theoretical expectation
+
+This section derives the two theory curves in the figure above, and the machinery is in
+`tests/conftest.py` if you want to reproduce them for your own box.
 
 Expand a plane wave in spherical harmonics and project onto a shell of radius $r$. For a
 field with three-dimensional power spectrum $P(k)$, the angular power spectrum of the
@@ -50,10 +53,9 @@ $$
 C_\ell = \frac{2}{\pi} \int \mathrm{d}k \; k^2 \, P(k) \, j_\ell^2(kr).
 $$
 
-This is exact for a geometrically thin shell. It is **not** the Limber approximation: a
-shell of zero thickness has no Limber limit, because Limber's approximation needs a
-radial kernel of finite width to integrate over. Comparing a single `cosmotile` slice
-against $P(\ell/r)/r^2$ will not work, and the discrepancy is not a bug.
+This is exact for a geometrically thin shell, and it is the **infinite box** (dotted)
+curve in the figure above: every mode contributes, including the arbitrarily long
+wavelengths no finite simulation contains.
 
 A *periodic box* contains only the discrete modes $\mathbf{k} = 2\pi\mathbf{j}/L$, so the
 prediction for a tiled box is the corresponding sum,
@@ -63,19 +65,57 @@ C_\ell = \frac{4\pi}{V} \sum_{\mathbf{k}} P(k) \, |W(\mathbf{k})|^2 \, j_\ell^2(
 \qquad V = L^3,
 $$
 
-where $W$ is the interpolation kernel's Fourier response (below). The difference between
-the sum and the integral *is* the finite-box error — everything in the next section
-follows from it.
+where $W$ is the interpolation kernel's Fourier response, given under "The interpolation
+kernel" below. This is the **box modes** (dashed) curve. The two expressions differ only
+in replacing an integral over all $k$ by a sum over the modes the box actually has, and
+that difference *is* the finite-box error — everything in the next section follows from
+it.
 
-One useful closed form: for $P(k) = A k^{-2}$, using
-$\int_0^\infty j_\ell^2(x)\,\mathrm{d}x = \pi/[2(2\ell+1)]$,
+### Why not Limber?
+
+Limber's approximation replaces $j_\ell^2(kr)$ by a delta function at
+$k = (\ell + 1/2)/r$, which for a field projected along the line of sight with a
+normalised radial kernel $q(r)$ gives the familiar
+
+$$
+C_\ell \approx \int \mathrm{d}r \; q^2(r) \, \frac{P\!\left((\ell + 1/2)/r\right)}{r^2}.
+$$
+
+It is worth spelling out why that form does **not** apply here, because
+$P(\ell/r)/r^2$ is the first thing most people reach for when sanity-checking a
+lightcone. For a top-hat kernel of width $\Delta r$ the integral evaluates to
+$P((\ell + 1/2)/r) / (r^2 \Delta r)$, which diverges as $\Delta r \to 0$. A `cosmotile`
+slice is a geometrically thin shell, so there is no $\Delta r$ to put there and no limit
+in which the exact expression above reduces to $P(\ell/r)/r^2$. The dimensions give the
+same warning: $P/r^2$ carries units of length, whereas $C_\ell$ for a dimensionless field
+is dimensionless.
+
+So compare a single slice against the exact integral, not against Limber. If you stack
+many slices into a genuine projection with a normalised radial kernel, Limber applies
+again in the usual way.
+
+### A closed form for a power law
+
+For $P(k) = A k^{-2}$ the integral can be done analytically, using
+$\int_0^\infty j_\ell^2(x)\,\mathrm{d}x = \pi/[2(2\ell+1)]$:
 
 $$
 C_\ell = \frac{A}{r\,(2\ell+1)}.
 $$
 
-This is checked directly in `tests/test_angular_power.py`, and it is a convenient sanity
-check on your own pipeline's normalisation.
+This is *not* the curve plotted above. The figure uses a power law truncated at
+$k_{\rm cut} = \pi/4$ to keep the input power well below Nyquist, whereas this result
+integrates over all $k$. Truncation removes the $1/(2x^2)$ tail of $j_\ell^2$ beyond
+$x = k_{\rm cut} r$, multiplying the result by roughly
+
+$$
+1 - \frac{2\ell + 1}{\pi \, k_{\rm cut} r},
+$$
+
+which in the figure's configuration ($k_{\rm cut} r \approx 157$) is already a 16%
+correction by $\ell = 40$. The closed form is still useful as an independent check on
+your pipeline's normalisation in the regime $\ell \ll k_{\rm cut} r$, and
+`tests/test_angular_power.py` verifies both it and the truncation correction directly.
 
 ## Large scales: the box fundamental
 
@@ -87,21 +127,20 @@ do not exist.
 :alt: Ratio of measured to infinite-box angular power, against multipole in units of the box fundamental
 
 Measured $C_\ell$ divided by the infinite-box prediction, for four shell radii. Plotted
-against $\ell / \ell_{\rm box}$ the curves collapse: the deficit is governed by the ratio
-of the multipole to the box fundamental and by nothing else.
+against $\ell / \ell_{\rm box}$ the curves collapse: the deficit is governed solely by the
+ratio of the multipole to the box fundamental.
 ```
 
 Practical thresholds from that figure:
 
 - $\ell < 0.5\,\ell_{\rm box}$: **more than half** the power is missing. Unusable.
 - $\ell \approx \ell_{\rm box}$: the discrete mode shell over-weights the fundamental,
-  giving a 20–40% *excess*. Also unusable, and more insidious because it errs upward.
+  giving a 20–40% *excess*.
 - $\ell > 1.5\,\ell_{\rm box}$: accurate to the few-percent level.
 
-Worked example: a 300 cMpc box observed at $z = 8$ ($r \approx 9200$ cMpc) has
+Example: a 300 cMpc box observed at $z = 8$ ($r \approx 9200$ cMpc) has
 $\ell_{\rm box} \approx 190$, so nothing below $\ell \approx 300$ can be believed. If you
-need lower multipoles you need a bigger box — no amount of tiling, rotating or
-re-seeding creates power that is not in the simulation.
+need lower multipoles you need a bigger box.
 
 ## Small scales: interpolation and aliasing
 
