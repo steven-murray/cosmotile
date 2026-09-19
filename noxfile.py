@@ -10,13 +10,13 @@ import nox
 package = "cosmotile"
 python_versions = ["3.12", "3.11", "3.13", "3.14"]
 nox.needs_version = ">= 2021.6.6"
-nox.options.sessions = (
+nox.options.sessions = [
     "mypy",
     "tests",
     "xdoctest",
     "docs-build",
     "tests-nojit",
-)
+]
 
 
 @nox.session(python=python_versions)
