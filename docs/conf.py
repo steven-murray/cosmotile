@@ -11,3 +11,6 @@ extensions = [
 ]
 autodoc_typehints = "description"
 html_theme = "furo"
+
+# `accuracy.md` uses $...$ / $$...$$ for the angular power spectrum derivation.
+myst_enable_extensions = ["dollarmath"]
