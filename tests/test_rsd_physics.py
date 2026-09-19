@@ -20,6 +20,8 @@ end-to-end rather than each half in isolation.
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 from astropy import units as un
@@ -319,3 +321,171 @@ def test_hubble_flow_chains_from_projection_to_distortion() -> None:
     )
 
     assert np.all(np.argmax(out, axis=0) > 16)
+
+
+# ---------------------------------------------------------------------------------
+# ``n_subcells`` convergence (GH #465)
+# ---------------------------------------------------------------------------------
+def continuity_solution(amplitude: float, wavelength: float, nslice: int) -> np.ndarray:
+    """Evaluate ``rho_s(s) = rho_r(r) / (1 - u'(r))`` for a sinusoidal displacement.
+
+    Returned on the observed (redshift-space) grid of slice centres, with NaN wherever
+    the mapping does not reach.
+    """
+    radial = np.arange(nslice, dtype=float)
+    displacement = amplitude * np.sin(2 * np.pi * radial / wavelength)
+    gradient = amplitude * (2 * np.pi / wavelength) * np.cos(2 * np.pi * radial / wavelength)
+    return interp1d(
+        radial - displacement, 1.0 / (1.0 - gradient), bounds_error=False, fill_value=np.nan
+    )(radial)
+
+
+@pytest.mark.parametrize("amplitude", [1.0, 2.0])
+def test_n_subcells_is_a_convergence_parameter(amplitude: float) -> None:
+    """Refining the sub-cell grid must monotonically improve the answer.
+
+    ``n_subcells`` refines the grid the displacement is applied on. It should therefore
+    behave like any other discretisation parameter: raising it must buy accuracy against
+    the exact continuity solution, and keep buying it until some other error dominates.
+
+    It did not. The final step used to *sample* the refined grid at the output slice
+    centres, so everything that landed between them was simply discarded -- the finer
+    the grid, the more there was to discard. Measured RMS error was flat or worse as
+    ``n_subcells`` rose (GH #465: 0.039, 0.048, 0.047, 0.041, 0.039 at 1, 2, 4, 8, 16
+    for ``amplitude = 2``). Integrating over the output cell instead makes the
+    refinement do what its name says.
+    """
+    nslice, wavelength = 256, 64.0
+    distance = make_los_grid(nslice)
+    radial = np.arange(nslice, dtype=float)
+    displacement = amplitude * np.sin(2 * np.pi * radial / wavelength)
+
+    exact = continuity_solution(amplitude, wavelength, nslice)
+    interior = slice(40, nslice - 40)
+
+    errors = []
+    for n_subcells in (1, 2, 4, 8, 16, 32):
+        out = cmt.apply_rsds(
+            field=np.ones((nslice, 1)),
+            los_displacement=displacement[:, None] * un.pixel,
+            distance=distance,
+            n_subcells=n_subcells,
+        )
+        residual = out[interior, 0] - exact[interior]
+        errors.append(float(np.sqrt(np.mean(residual**2))))
+
+    assert all(b < a for a, b in itertools.pairwise(errors)), (
+        f"RMS error must fall monotonically with n_subcells, got {np.round(errors, 5)}"
+    )
+    # Roughly first order in the sub-cell size, so 32x refinement must buy an order of
+    # magnitude. (It is not exactly first order: the cloud-in-cell kernel narrows with
+    # the sub-cell, but the output cell average stays a top-hat of one slice.)
+    assert errors[-1] < errors[0] / 10, f"only {errors[0] / errors[-1]:.1f}x better"
+
+
+def test_refinement_conserves_mass() -> None:
+    """Refining and re-averaging must move mass about, never create or destroy it.
+
+    Cloud-in-cell deposition conserves the weight it deposits and the final step
+    integrates the deposited field over the output cells, so with a displacement that
+    keeps every parcel on the grid the total must be preserved to round-off -- at any
+    refinement.
+
+    The displacement is chosen to point *inwards* at both ends (away from the observer
+    at the near end, towards it at the far end), so no parcel leaves and, equally
+    importantly, the grid needs no extrapolated padding -- which would bring mass in
+    from outside and is a separate, documented behaviour.
+    """
+    nslice = 128
+    distance = make_los_grid(nslice, 500.0)
+    radial = np.arange(nslice, dtype=float)
+    rng = np.random.default_rng(12)
+
+    field = 1 + 0.3 * rng.normal(size=(nslice, 4))
+    inward = -2.0 * np.cos(np.pi * radial / (nslice - 1))
+    displacement = np.tile(inward[:, None], (1, 4)) * un.pixel
+
+    for n_subcells in (1, 4, 16):
+        out = cmt.apply_rsds(
+            field=field,
+            los_displacement=displacement,
+            distance=distance,
+            n_subcells=n_subcells,
+        )
+        assert abs(out.sum() / field.sum() - 1) < 1e-12, f"n_subcells={n_subcells}"
+
+
+def test_the_output_is_an_average_over_the_slice_not_a_sample() -> None:
+    """A spike that lands between two slices must be shared, not lost.
+
+    This is the mechanism behind the non-convergence, in isolation. A single parcel
+    displaced to exactly the boundary between two output cells straddles both, so
+    cloud-in-cell splits it evenly -- whatever the sub-cell refinement. Sampling the
+    refined grid instead returned the parcel intact at ``n_subcells = 1`` and nothing at
+    all at ``n_subcells = 4``, because no output slice sat on the sub-cell it landed in.
+    """
+    nslice = 21
+    distance = make_los_grid(nslice, 10.0)
+    field = np.zeros((nslice, 1))
+    field[10] = 1.0
+
+    for n_subcells in (1, 2, 4, 8):
+        out = cmt.apply_rsds(
+            field=field,
+            los_displacement=np.full((nslice, 1), 2.5) * un.pixel,
+            distance=distance,
+            n_subcells=n_subcells,
+        )
+        np.testing.assert_allclose(out[7, 0], 0.5, atol=1e-12)
+        np.testing.assert_allclose(out[8, 0], 0.5, atol=1e-12)
+        np.testing.assert_allclose(out.sum(), 1.0, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "distance",
+    [
+        np.arange(7.0) + 10,
+        np.array([10.0, 11.001, 12, 13, 14, 15, 16]),
+        np.array([10.0, 10.3, 11.7, 13.9, 14.2, 17.0, 21.5]),
+    ],
+    ids=["regular", "mildly irregular", "strongly irregular"],
+)
+@pytest.mark.parametrize("n_subcells", [1, 4, 16])
+def test_zero_displacement_is_the_identity_on_any_grid(
+    distance: np.ndarray, n_subcells: int
+) -> None:
+    """The refine-displace-average round trip must be exact however the slices are spaced.
+
+    Each output cell is subdivided into ``n_subcells`` equal parts, so every output edge
+    is also a sub-cell edge and both the refinement and the final average are exact. A
+    *globally* uniform sub-grid cannot manage this on an irregular slice grid: its cells
+    straddle the output edges and mix neighbouring slices together, which left a residual
+    of up to 4% that ``n_subcells`` barely improved.
+    """
+    rng = np.random.default_rng(6)
+    field = 1 + 0.5 * rng.normal(size=(distance.size, 8))
+
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=np.zeros_like(field) * un.pixel,
+        distance=distance * un.pixel,
+        n_subcells=n_subcells,
+    )
+
+    np.testing.assert_allclose(out, field, rtol=0, atol=1e-12)
+    assert abs(out.sum() / field.sum() - 1) < 1e-12
+
+
+def test_n_subcells_must_be_a_positive_integer() -> None:
+    """A zero would divide by zero; a float or a negative would build a nonsense grid."""
+    field = np.ones((3, 2))
+    distance = make_los_grid(3, 10.0)
+
+    for bad in (0, -1, 2.5):
+        with pytest.raises(ValueError, match="n_subcells must be a positive integer"):
+            cmt.apply_rsds(
+                field=field,
+                los_displacement=np.zeros((3, 2)) * un.pixel,
+                distance=distance,
+                n_subcells=bad,
+            )

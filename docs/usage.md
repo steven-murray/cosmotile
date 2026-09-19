@@ -8,6 +8,13 @@ Everything is measured in **cell units**: `distance_to_shell` and `origin` are i
 of the coeval box's cell size, not in Mpc. Use
 {func}`~cosmotile.get_distance_to_shell_from_redshift` to convert.
 
+Whatever a cell of your box holds is what comes out. Simulation cells almost always hold
+the *mean* of the field over the cell, so your lightcone carries that cell window, plus
+the reconstruction kernel set by `interpolation_order`, plus any output window you ask
+for. That chain decides which windows you should and should not divide out of a measured
+power spectrum, and it is worked through in
+[What a cell holds, and what comes out](accuracy).
+
 ## A single shell
 
 ```python
@@ -94,6 +101,54 @@ Passing a different `rotation` and `origin` per shell yields an apparently diffe
 realisation from the same box, at the cost of breaking the correlation along the line of
 sight. See [Accuracy and Limitations](accuracy) for when that trade is worth making.
 
+## Averaging over the pixel instead of sampling it
+
+By default each value is a single sample of the reconstructed field at the pixel centre,
+at exactly the shell radius. To average over the solid angle and radial extent the pixel
+really covers, pass `subsample_level` (angular) and `radial_width` with
+`n_radial_samples` (radial):
+
+```python
+radius = 100.0
+slice_spacing = 5.0  # cells between neighbouring shells
+
+(shell,) = cosmotile.make_healpix_lightcone_slice(
+    nside=nside,
+    subsample_level=cosmotile.recommended_subsample_level(nside, radius),
+    coevals=box,
+    distance_to_shell=radius,
+    radial_width=slice_spacing,
+    n_radial_samples=4,
+)
+```
+
+`radial_width` is the **total** radial window you want, not an extra one to pile on: your
+box already carries about one cell of radial smoothing, and `cosmotile` subtracts that
+before applying the remainder. So the default of `1.0` does nothing, a value below one
+cell is an error (averaging cannot sharpen), and if your box holds point samples — or you
+have run {func}`~cosmotile.deconvolve_cell_window` on it — pass `coeval_cell_width=0` so
+the full width is applied.
+
+`subsample_level=k` averages over the `4**k` sub-pixels of an `nside * 2**k` map;
+{func}`~cosmotile.recommended_subsample_level` picks `k` for a wanted accuracy, since the
+error falls as the square of the sub-pixel arc.
+
+This costs `4**subsample_level * n_radial_samples` interpolations per pixel, and it makes
+the output a genuinely pixelised map — so the HEALPix pixel window then applies to its
+angular power spectrum, whereas on a sampled map it must not be divided out. Both
+defaults reproduce point sampling exactly.
+
+If you need the output free of the input's cell window altogether — rather than merely
+accounted for — remove it once, before the shell loop, and say so:
+
+```python
+sharpened = cosmotile.deconvolve_cell_window(box)
+```
+
+That is usually not what you want — the cell average is the field at the resolution your
+simulation actually has, and deconvolving amplifies near-Nyquist noise. See
+[Accuracy and Limitations](accuracy) for when it earns its place.
+
 ## Redshift-space distortions
 
 Project the peculiar velocity field onto the line of sight, then displace the field
@@ -139,4 +194,5 @@ $$
 
 for a box of length $L$ and cell size $\Delta$ at shell radius $r$.
 [Accuracy and Limitations](accuracy) works through where this comes from, how badly it
-fails outside that window, and how to choose `nside` and `interpolation_order`.
+fails outside that window, and how to choose `nside`, `interpolation_order`,
+`subsample_level` and `n_subcells`.

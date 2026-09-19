@@ -74,7 +74,10 @@ def test_angular_correlation_equals_box_xi_at_the_chord_distance(
     Two sight-lines separated by angle ``theta`` hit the shell at two points whose
     straight-line (chord) separation is ``2 r sin(theta/2)``. Those are just two points
     of the periodic box at that separation, so their expected product is the box's own
-    ``xi`` there -- a statement with no approximation in it.
+    ``xi`` there -- a statement with no approximation in it beyond the reconstruction
+    kernel, which the tolerances below absorb. Comparing against the *box's* ``xi`` is
+    the right thing whatever the cell values mean: were they cell averages, both sides
+    would carry the cell window and it would cancel.
 
     This catches any error in the radius scaling or the spherical-to-Cartesian mapping
     that the single-realisation power spectrum test might absorb into its tolerance,
@@ -134,8 +137,10 @@ def test_nearest_neighbour_tiling_preserves_the_one_point_statistics(
 
     With nearest-neighbour sampling the shell is a subsample of the box's cells, so its
     one-point moments are the box's own up to subsampling noise -- there is no kernel to
-    suppress anything. A systematic offset here would mean the shell is preferentially
-    landing on particular cells, i.e. the sampling of the periodic lattice is biased.
+    suppress anything. That holds whatever the cells mean; it is a statement about
+    resampling, not about the field the values represent. A systematic offset here would
+    mean the shell is preferentially landing on particular cells, i.e. the sampling of
+    the periodic lattice is biased.
     """
     for seed in SEEDS:
         box = gaussian_box(NCELL, spectrum, seed)

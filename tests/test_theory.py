@@ -248,3 +248,126 @@ def test_continuum_matches_its_closed_form() -> None:
     )
 
     np.testing.assert_allclose(numeric, closed_form, rtol=2e-3)
+
+
+# ---------------------------------------------------------------------------------
+# The radial window
+# ---------------------------------------------------------------------------------
+def test_zero_radial_width_is_the_thin_shell_sum() -> None:
+    """The default must be bit-for-bit the geometrically thin shell.
+
+    The radial window is opt-in, so asking for none must not so much as reorder a
+    floating-point operation relative to the thin-shell path.
+    """
+    kmag, weight = grid_modes(32)
+    ells = np.arange(0, 30)
+
+    np.testing.assert_array_equal(
+        discrete_angular_power(kmag, weight, 32.0**3, 40.0, ells, radial_width=0.0),
+        discrete_angular_power(kmag, weight, 32.0**3, 40.0, ells),
+    )
+
+
+def test_radial_window_replaces_the_bessel_function_with_its_average() -> None:
+    r"""The windowed sum must be ``(4 pi / V) sum_k P(k) |int q(r) j_l(kr) dr|^2``.
+
+    Checked against that expression written out directly, with the ``r^2``-weighted
+    top-hat kernel evaluated on a dense grid rather than by the quadrature the function
+    uses internally. Two independent routes to the same integral, so an error in the
+    kernel normalisation or in the node placement cannot pass.
+    """
+    kmag = np.array([0.15, 0.4, 0.9])
+    weight = np.array([2.0, 1.0, 0.4])
+    volume, radius, width = 512.0, 30.0, 6.0
+    ells = np.arange(0, 20)
+
+    grid = np.linspace(radius - width / 2, radius + width / 2, 200001)
+    norm = np.trapezoid(grid**2, grid)
+    expected = np.array(
+        [
+            (4 * np.pi / volume)
+            * np.sum(
+                weight
+                * np.array(
+                    [
+                        np.trapezoid(grid**2 * spherical_jn(int(ell), k * grid), grid) / norm
+                        for k in kmag
+                    ]
+                )
+                ** 2
+            )
+            for ell in ells
+        ]
+    )
+
+    np.testing.assert_allclose(
+        discrete_angular_power(kmag, weight, volume, radius, ells, radial_width=width, nbin=200),
+        expected,
+        rtol=1e-9,
+    )
+
+
+def test_radial_window_suppresses_power_below_the_spectral_cut_off() -> None:
+    """Averaging takes power away where there is power, and a wider window takes more.
+
+    Not a tautology, and not even true everywhere: the kernel is ``r^2``-weighted rather
+    than a plain top-hat, and ``j_l`` oscillates, so the integral could come out either
+    way. Below the spectral cut-off it always suppresses, monotonically in the width.
+    """
+    radius, kcut = 40.0, np.pi / 4
+    kmag, weight = grid_modes(32)
+    ells = np.arange(5, int(0.8 * kcut * radius))  # 5 to 25; cut-off is at l ~ 31
+    thin = discrete_angular_power(kmag, weight, 32.0**3, radius, ells)
+
+    previous = thin
+    for width in (1.0, 2.0, 4.0):
+        windowed = discrete_angular_power(kmag, weight, 32.0**3, radius, ells, radial_width=width)
+        assert np.all(windowed < previous), f"width {width} did not suppress further"
+        previous = windowed
+
+    # And the widest window is a real effect, not a rounding error.
+    assert (previous / thin).min() < 0.9
+
+
+def test_radial_window_can_add_power_above_the_spectral_cut_off() -> None:
+    """Above the cut-off, averaging *raises* the predicted power, and that is physical.
+
+    Where a thin shell has essentially no signal left, the window reaches radii at which
+    ``j_l(kr)`` is larger than it is at the shell itself, so the average exceeds the
+    point value. A user who assumes a radial window can only ever suppress will
+    mis-attribute that rise -- hence pinning it here, alongside the regime where the
+    intuition does hold.
+    """
+    radius, kcut = 40.0, np.pi / 4
+    kmag, weight = grid_modes(32)
+    ells = np.arange(5, 45)
+    thin = discrete_angular_power(kmag, weight, 32.0**3, radius, ells)
+    windowed = discrete_angular_power(kmag, weight, 32.0**3, radius, ells, radial_width=4.0)
+
+    ratio = windowed / thin
+    above = ells > kcut * radius  # l > 31
+    assert np.all(ratio[ells < 0.8 * kcut * radius] < 1)
+    assert np.all(ratio[above] > 1)
+
+    # The signal there has collapsed, so this is a rise on top of nothing much.
+    assert thin[above].max() < 1e-2 * thin[0]
+
+
+@pytest.mark.parametrize("width", [1.0, 4.0, 8.0])
+def test_radial_node_count_is_chosen_fine_enough(width: float) -> None:
+    """The default node count must reproduce a far denser rule to round-off.
+
+    ``j_l(kr)`` runs through about ``k w / 2 pi`` periods across the window, so a fixed
+    node count is either wasteful for a narrow window or wrong for a wide one. The
+    default scales with ``k_max w``; this checks it against 200 nodes, which is beyond
+    ample at any of these widths.
+    """
+    kmag, weight = grid_modes(32)
+    ells = np.arange(2, 40)
+    args = (kmag, weight, 32.0**3, 40.0, ells)
+
+    np.testing.assert_allclose(
+        discrete_angular_power(*args, radial_width=width),
+        discrete_angular_power(*args, radial_width=width, n_radial_nodes=200),
+        rtol=1e-11,
+    )

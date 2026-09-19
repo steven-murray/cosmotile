@@ -15,6 +15,15 @@ The Fourier convention used throughout (and matched by :func:`gaussian_box`) is
 
 with :math:`V = L^3`. This is the same convention as :mod:`cosmotile.theory`, which
 ships the closed-form angular-power predictions these tests are compared against.
+
+**These boxes hold point samples, not cell averages.** :func:`gaussian_box` evaluates
+that sum at the grid nodes, so there is no cell window on it -- which is why the
+predictions are handed only the reconstruction kernel
+(:func:`cosmotile.theory.interpolation_window`) and nothing else. A real simulation box
+holds cell averages and therefore carries an extra ``prod_i sinc(k_i / 2)``
+(:func:`cosmotile.cell_window`); anyone reusing these helpers on real data must put it
+in themselves. See ``tests/test_conventions.py``, and "What a cell holds, and what comes
+out" in ``docs/accuracy.md``.
 """
 
 from __future__ import annotations
@@ -46,8 +55,15 @@ def gaussian_box(n: int, pk: Callable[[np.ndarray], np.ndarray], seed: int) -> n
     documented at the top of this module. ``powerbox``'s defaults (``a=b=1``,
     ``vol_normalised_power=True``) already use exactly this convention once
     ``boxlength`` is given in cells.
+
+    .. note:: ``powerbox`` applies its ``seed`` argument under ``if self.seed:``, so
+              ``seed=0`` -- which several modules here use -- leaves the global numpy
+              stream untouched and yields a box that depends on whatever ran before it.
+              Seeding explicitly makes every box reproducible and the suite
+              order-independent.
     """
     pbx = pytest.importorskip("powerbox")
+    np.random.seed(seed)  # noqa: NPY002
     return np.asarray(pbx.PowerBox(N=n, dim=3, pk=pk, boxlength=float(n), seed=seed).delta_x())
 
 

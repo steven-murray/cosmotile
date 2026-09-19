@@ -65,11 +65,18 @@ def band_scatter(lo: int, hi: int) -> float:
     return float(np.sqrt(2 / np.sum(2 * np.arange(lo, hi) + 1)))
 
 
-def healpix_shell(box: np.ndarray, radius: float, order: int = 1) -> np.ndarray:
+def healpix_shell(
+    box: np.ndarray,
+    radius: float,
+    order: int = 1,
+    nside: int = NSIDE,
+    subsample_level: int = 0,
+) -> np.ndarray:
     """Tile ``box`` onto a HEALPix shell of the given radius."""
     return next(
         cmt.make_healpix_lightcone_slice(
-            nside=NSIDE,
+            nside=nside,
+            subsample_level=subsample_level,
             coevals=box,
             distance_to_shell=radius,
             interpolation_order=order,
@@ -77,10 +84,17 @@ def healpix_shell(box: np.ndarray, radius: float, order: int = 1) -> np.ndarray:
     )
 
 
-def measured_cl(box: np.ndarray, radius: float, order: int = 1) -> np.ndarray:
+def measured_cl(
+    box: np.ndarray,
+    radius: float,
+    order: int = 1,
+    nside: int = NSIDE,
+    subsample_level: int = 0,
+    lmax: int = LMAX,
+) -> np.ndarray:
     """Angular power spectrum of the tiled shell."""
     hp = pytest.importorskip("healpy")
-    return hp.anafast(healpix_shell(box, radius, order), lmax=LMAX)
+    return hp.anafast(healpix_shell(box, radius, order, nside, subsample_level), lmax=lmax)
 
 
 def predicted_cl(
@@ -89,6 +103,7 @@ def predicted_cl(
     pk: object,
     ells: np.ndarray,
     ncell: int = NCELL,
+    radial_width: float = 0.0,
 ) -> np.ndarray:
     """Predicted ``C_l`` for a shell through the box.
 
@@ -109,7 +124,12 @@ def predicted_cl(
 
     nonzero = kmag > 0
     return discrete_angular_power(
-        kmag[nonzero].ravel(), weight[nonzero].ravel(), volume, radius, ells
+        kmag[nonzero].ravel(),
+        weight[nonzero].ravel(),
+        volume,
+        radius,
+        ells,
+        radial_width=radial_width,
     )
 
 
@@ -353,3 +373,218 @@ def test_structure_is_exactly_replicated_at_lattice_separations(multiple: int) -
     # And it is not simply that the box is nearly constant along those directions.
     _ = rng  # keep the generator referenced for clarity
     assert box.std() > 0.5
+
+
+# ---------------------------------------------------------------------------------
+# Angular averaging (GH #465) -- with ``subsample_level > 0`` the map stops being a
+# sampled field and becomes a pixelised one, which changes its statistics in two
+# specific, checkable ways.
+# ---------------------------------------------------------------------------------
+PIXWIN_NSIDE = 32
+PIXWIN_LMAX = 60
+PIXWIN_BANDS = ((10, 16), (16, 24), (24, 34), (34, 46), (46, 60))
+
+
+def test_angular_averaging_applies_the_healpix_pixel_window() -> None:
+    """Averaging over sub-pixels must multiply the measured ``C_l`` by ``pixwin^2``.
+
+    This is the sharpest available statement of what GH #465 asked for. Comparing the
+    averaged map against the *sampled* map of the same realisation cancels the input
+    field's sample variance and the chi-squared scatter of the ``a_lm`` -- both maps are
+    built from the same box with the same phases -- so the only thing left is the pixel
+    window, and it can be checked at the sub-percent level rather than the few-percent
+    level a comparison against theory would allow.
+
+    ``nside = 32`` is chosen so that ``pixwin^2`` falls to 0.77 by ``l = 60``: the
+    correction being tested is a 23% effect, not a rounding error.
+    """
+    hp = pytest.importorskip("healpy")
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    box = gaussian_box(NCELL, pk, 0)
+    radius = 80.0
+
+    kw = {"nside": PIXWIN_NSIDE, "lmax": PIXWIN_LMAX}
+    sampled = measured_cl(box, radius, **kw)
+    pixwin = hp.pixwin(PIXWIN_NSIDE)[: PIXWIN_LMAX + 1] ** 2
+
+    # The window must be a real correction over the band being tested, or the test is
+    # asserting nothing.
+    assert band_average(pixwin, 46, 60) < 0.8
+
+    # Sub-pixel averaging converges on the exact pixel average, so the agreement must
+    # improve with level. Level 3 is 64 sub-samples per pixel.
+    residuals = []
+    for level in (1, 2, 3):
+        averaged = measured_cl(box, radius, subsample_level=level, **kw)
+        ratios = np.array(
+            [
+                band_average(averaged, lo, hi) / band_average(sampled * pixwin, lo, hi)
+                for lo, hi in PIXWIN_BANDS
+            ]
+        )
+        residuals.append(np.abs(ratios - 1).max())
+
+    assert residuals[2] < 0.01, f"level-3 residual {residuals[2]:.4f}"
+    assert residuals[0] > residuals[1] > residuals[2], f"not converging: {residuals}"
+
+
+def test_averaged_angular_power_matches_theory_times_the_pixel_window() -> None:
+    """End to end: ``C_l`` of an averaged map is the thin-shell theory times ``pixwin^2``.
+
+    The previous test cancels the theory out; this one does not. It asserts the whole
+    chain -- box modes, tiling, pixel average -- against
+    ``(4 pi / V) sum_k P(k) W(k)^2 j_l^2(kr) * pixwin_l^2``, at the same tolerances
+    :func:`test_angular_power_matches_theory` uses for the sampled map. Dividing the
+    pixel window *out* of a sampled map would be wrong; multiplying it *into* the theory
+    for an averaged map is right, and that asymmetry is the practical point of GH #465.
+    """
+    hp = pytest.importorskip("healpy")
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    ells = np.arange(PIXWIN_LMAX + 1)
+    radius = 80.0
+    pixwin = hp.pixwin(PIXWIN_NSIDE)[: PIXWIN_LMAX + 1] ** 2
+
+    ratios = []
+    for seed in SEEDS:
+        box = gaussian_box(NCELL, pk, seed)
+        cl = measured_cl(box, radius, nside=PIXWIN_NSIDE, subsample_level=2, lmax=PIXWIN_LMAX)
+        theory = predicted_cl(box, radius, pk, ells) * pixwin
+        ratios.append(
+            [band_average(cl, lo, hi) / band_average(theory, lo, hi) for lo, hi in PIXWIN_BANDS]
+        )
+
+    ratios = np.array(ratios)
+    tolerance = np.array([4 * band_scatter(lo, hi) for lo, hi in PIXWIN_BANDS])
+    assert np.all(np.abs(ratios - 1) < tolerance), (
+        f"per-band ratios out of tolerance:\n{np.round(ratios, 3)}\ntolerance: "
+        f"{np.round(tolerance, 3)}"
+    )
+    assert abs(ratios.mean() - 1) < 0.06, f"mean ratio {ratios.mean():.4f}"
+
+
+def test_angular_averaging_suppresses_the_aliasing_floor() -> None:
+    """Averaging over the pixel must knock down the floor of the previous test.
+
+    :func:`test_aliasing_floor_above_the_spectral_cutoff` measures spurious power above
+    the input's spectral cut-off. Part of that floor is sub-pixel structure in the
+    reconstructed field folded down by sampling at pixel centres, and averaging over the
+    pixel removes it before it can alias. The remainder is power the trilinear
+    reconstruction genuinely puts at those multipoles, which averaging only suppresses by
+    the pixel window (0.87 here), so the floor drops sharply but does not vanish.
+    """
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    radius = 80.0
+    cutoff_ell = int(KCUT * radius)
+    above = slice(cutoff_ell + 14, LMAX + 1)
+    ells = np.arange(LMAX + 1)
+
+    drops = []
+    for seed in SEEDS:
+        box = gaussian_box(NCELL, pk, seed)
+        theory = predicted_cl(box, radius, pk, ells)
+        floors = [
+            measured_cl(box, radius, subsample_level=level)[above].min() / theory[above].max()
+            for level in (0, 2)
+        ]
+        assert floors[0] > 50, "the sampled map must still show the documented floor"
+        drops.append(floors[0] / floors[1])
+
+    assert min(drops) > 3, f"floor barely moved: {np.round(drops, 2)}"
+
+
+# ---------------------------------------------------------------------------------
+# Radial averaging: the shell stops being thin, and the prediction changes with it
+# ---------------------------------------------------------------------------------
+def radially_averaged_shell(box: np.ndarray, radius: float, width: float) -> np.ndarray:
+    """Tile ``box`` onto a shell averaged over a radial top-hat of ``width`` cells.
+
+    ``coeval_cell_width=0`` because :func:`gaussian_box` returns point samples of a
+    band-limited field rather than cell averages, so the requested width is the whole
+    of the radial window and matches what the prediction is handed.
+    """
+    hp = pytest.importorskip("healpy")
+    shell = next(
+        cmt.make_healpix_lightcone_slice(
+            nside=NSIDE,
+            coevals=box,
+            distance_to_shell=radius,
+            radial_width=width,
+            coeval_cell_width=0.0,
+            n_radial_samples=1 if width == 0 else 8,
+        )
+    )
+    return hp.anafast(shell, lmax=LMAX)
+
+
+def test_radially_averaged_power_matches_the_windowed_thin_shell_formula() -> None:
+    r"""A shell of finite thickness must follow the formula with the radial kernel in it.
+
+    The thin-shell relation is exact only for a shell of zero thickness. Average over a
+    radial top-hat and ``j_l(kr)`` is replaced by its mean over the kernel,
+
+    .. math::
+
+        C_\ell = \frac{4\pi}{V} \sum_{\mathbf{k}} P(k) |W(\mathbf{k})|^2
+                 \left| \int \mathrm{d}r \, q(r) \, j_\ell(kr) \right|^2 ,
+
+    which is the prediction ``docs/accuracy.md`` tells users to compare against once
+    they turn radial averaging on. This is that comparison, at the same tolerances
+    :func:`test_angular_power_matches_theory` uses for the thin shell -- four times each
+    band's own chi-squared scatter, and 6% on the mean over bands and realisations.
+    """
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    ells = np.arange(LMAX + 1)
+    radius, width = 80.0, 4.0
+
+    ratios = []
+    for seed in SEEDS:
+        box = gaussian_box(NCELL, pk, seed)
+        cl = radially_averaged_shell(box, radius, width)
+        theory = predicted_cl(box, radius, pk, ells, radial_width=width)
+        ratios.append([band_average(cl, lo, hi) / band_average(theory, lo, hi) for lo, hi in BANDS])
+
+    ratios = np.array(ratios)
+    tolerance = np.array([4 * band_scatter(lo, hi) for lo, hi in BANDS])
+    assert np.all(np.abs(ratios - 1) < tolerance), (
+        f"per-band ratios out of tolerance:\n{np.round(ratios, 3)}\n"
+        f"tolerance: {np.round(tolerance, 3)}"
+    )
+    assert abs(ratios.mean() - 1) < 0.06, f"mean ratio {ratios.mean():.4f}"
+
+
+def test_radial_averaging_suppresses_power_by_exactly_the_predicted_window() -> None:
+    """The *change* the radial window makes must match the change the formula predicts.
+
+    Dividing the averaged map by the unaveraged one, both built from the same box,
+    cancels the input field's sample variance and most of the chi-squared scatter of
+    the ``a_lm`` -- the two maps share their phases. What is left is the radial window
+    alone, which can then be checked at the percent level rather than the tens of
+    percent a single-realisation comparison against theory would allow.
+
+    This sharpening runs out for wide windows: average over enough radius and the two
+    maps stop being the same realisation of anything. Hence the modest widths here; the
+    absolute comparison above is what covers the rest.
+    """
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    ells = np.arange(LMAX + 1)
+    radius = 80.0
+
+    for seed in SEEDS[:2]:
+        box = gaussian_box(NCELL, pk, seed)
+        thin = radially_averaged_shell(box, radius, 0.0)
+        thin_theory = predicted_cl(box, radius, pk, ells)
+
+        for width in (2.0, 4.0):
+            thick = radially_averaged_shell(box, radius, width)
+            thick_theory = predicted_cl(box, radius, pk, ells, radial_width=width)
+
+            for lo, hi in BANDS:
+                measured = band_average(thick, lo, hi) / band_average(thin, lo, hi)
+                predicted = band_average(thick_theory, lo, hi) / band_average(thin_theory, lo, hi)
+
+                # The window is a real effect, or this test asserts nothing.
+                assert predicted < 0.99, f"band {lo}-{hi} barely suppressed: {predicted:.4f}"
+                assert abs(measured / predicted - 1) < 0.03, (
+                    f"seed {seed}, width {width}, band {lo}-{hi}: measured suppression "
+                    f"{measured:.4f} vs predicted {predicted:.4f}"
+                )
