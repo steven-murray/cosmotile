@@ -103,6 +103,7 @@ def predicted_cl(
     pk: object,
     ells: np.ndarray,
     ncell: int = NCELL,
+    radial_width: float = 0.0,
 ) -> np.ndarray:
     """Predicted ``C_l`` for a shell through the box.
 
@@ -123,7 +124,12 @@ def predicted_cl(
 
     nonzero = kmag > 0
     return discrete_angular_power(
-        kmag[nonzero].ravel(), weight[nonzero].ravel(), volume, radius, ells
+        kmag[nonzero].ravel(),
+        weight[nonzero].ravel(),
+        volume,
+        radius,
+        ells,
+        radial_width=radial_width,
     )
 
 
@@ -484,3 +490,101 @@ def test_angular_averaging_suppresses_the_aliasing_floor() -> None:
         drops.append(floors[0] / floors[1])
 
     assert min(drops) > 3, f"floor barely moved: {np.round(drops, 2)}"
+
+
+# ---------------------------------------------------------------------------------
+# Radial averaging: the shell stops being thin, and the prediction changes with it
+# ---------------------------------------------------------------------------------
+def radially_averaged_shell(box: np.ndarray, radius: float, width: float) -> np.ndarray:
+    """Tile ``box`` onto a shell averaged over a radial top-hat of ``width`` cells.
+
+    ``coeval_cell_width=0`` because :func:`gaussian_box` returns point samples of a
+    band-limited field rather than cell averages, so the requested width is the whole
+    of the radial window and matches what the prediction is handed.
+    """
+    hp = pytest.importorskip("healpy")
+    shell = next(
+        cmt.make_healpix_lightcone_slice(
+            nside=NSIDE,
+            coevals=box,
+            distance_to_shell=radius,
+            radial_width=width,
+            coeval_cell_width=0.0,
+            n_radial_samples=1 if width == 0 else 8,
+        )
+    )
+    return hp.anafast(shell, lmax=LMAX)
+
+
+def test_radially_averaged_power_matches_the_windowed_thin_shell_formula() -> None:
+    r"""A shell of finite thickness must follow the formula with the radial kernel in it.
+
+    The thin-shell relation is exact only for a shell of zero thickness. Average over a
+    radial top-hat and ``j_l(kr)`` is replaced by its mean over the kernel,
+
+    .. math::
+
+        C_\ell = \frac{4\pi}{V} \sum_{\mathbf{k}} P(k) |W(\mathbf{k})|^2
+                 \left| \int \mathrm{d}r \, q(r) \, j_\ell(kr) \right|^2 ,
+
+    which is the prediction ``docs/accuracy.md`` tells users to compare against once
+    they turn radial averaging on. This is that comparison, at the same tolerances
+    :func:`test_angular_power_matches_theory` uses for the thin shell -- four times each
+    band's own chi-squared scatter, and 6% on the mean over bands and realisations.
+    """
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    ells = np.arange(LMAX + 1)
+    radius, width = 80.0, 4.0
+
+    ratios = []
+    for seed in SEEDS:
+        box = gaussian_box(NCELL, pk, seed)
+        cl = radially_averaged_shell(box, radius, width)
+        theory = predicted_cl(box, radius, pk, ells, radial_width=width)
+        ratios.append([band_average(cl, lo, hi) / band_average(theory, lo, hi) for lo, hi in BANDS])
+
+    ratios = np.array(ratios)
+    tolerance = np.array([4 * band_scatter(lo, hi) for lo, hi in BANDS])
+    assert np.all(np.abs(ratios - 1) < tolerance), (
+        f"per-band ratios out of tolerance:\n{np.round(ratios, 3)}\n"
+        f"tolerance: {np.round(tolerance, 3)}"
+    )
+    assert abs(ratios.mean() - 1) < 0.06, f"mean ratio {ratios.mean():.4f}"
+
+
+def test_radial_averaging_suppresses_power_by_exactly_the_predicted_window() -> None:
+    """The *change* the radial window makes must match the change the formula predicts.
+
+    Dividing the averaged map by the unaveraged one, both built from the same box,
+    cancels the input field's sample variance and most of the chi-squared scatter of
+    the ``a_lm`` -- the two maps share their phases. What is left is the radial window
+    alone, which can then be checked at the percent level rather than the tens of
+    percent a single-realisation comparison against theory would allow.
+
+    This sharpening runs out for wide windows: average over enough radius and the two
+    maps stop being the same realisation of anything. Hence the modest widths here; the
+    absolute comparison above is what covers the rest.
+    """
+    pk = band_limited_powerlaw(-2.0, KCUT)
+    ells = np.arange(LMAX + 1)
+    radius = 80.0
+
+    for seed in SEEDS[:2]:
+        box = gaussian_box(NCELL, pk, seed)
+        thin = radially_averaged_shell(box, radius, 0.0)
+        thin_theory = predicted_cl(box, radius, pk, ells)
+
+        for width in (2.0, 4.0):
+            thick = radially_averaged_shell(box, radius, width)
+            thick_theory = predicted_cl(box, radius, pk, ells, radial_width=width)
+
+            for lo, hi in BANDS:
+                measured = band_average(thick, lo, hi) / band_average(thin, lo, hi)
+                predicted = band_average(thick_theory, lo, hi) / band_average(thin_theory, lo, hi)
+
+                # The window is a real effect, or this test asserts nothing.
+                assert predicted < 0.99, f"band {lo}-{hi} barely suppressed: {predicted:.4f}"
+                assert abs(measured / predicted - 1) < 0.03, (
+                    f"seed {seed}, width {width}, band {lo}-{hi}: measured suppression "
+                    f"{measured:.4f} vs predicted {predicted:.4f}"
+                )

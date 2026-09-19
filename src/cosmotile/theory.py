@@ -84,6 +84,7 @@ _MAX_ORDER = 5
 # asks for almost none. See the ``nbin`` discussion in discrete_angular_power.
 _BINS_PER_OSCILLATION = 16
 _MIN_BINS = 100
+_MIN_RADIAL_NODES = 8
 
 
 def _cardinal_bspline_at_integers(order: int) -> np.ndarray:
@@ -206,8 +207,11 @@ def discrete_angular_power(
     radius: float,
     ells: np.ndarray,
     nbin: int | None = None,
+    *,
+    radial_width: float = 0.0,
+    n_radial_nodes: int | None = None,
 ) -> np.ndarray:
-    r"""Evaluate the angular power spectrum of a thin shell through a periodic box.
+    r"""Evaluate the angular power spectrum of a shell through a periodic box.
 
     A periodic box contains only the discrete modes ``k = 2 pi j / L``, so the exact
     prediction for a shell cut through a tiled box is the mode sum
@@ -238,6 +242,33 @@ def discrete_angular_power(
         Shell radius, in cells.
     ells
         Multipoles at which to evaluate.
+    radial_width
+        Width of the radial top-hat the shell was averaged over, in cells; zero (the
+        default) for a geometrically thin shell. Averaging turns the shell into a
+        projection with a normalised radial kernel ``q(r)``, so ``j_l(kr)`` is replaced
+        by its average over that kernel,
+
+        .. math::
+
+            C_\ell = \frac{4\pi}{V} \sum_{\mathbf{k}} P(k)
+                     \left| \int \mathrm{d}r \, q(r) \, j_\ell(kr) \right|^2 ,
+
+        with ``q`` proportional to ``r^2`` across the window, matching what
+        :func:`cosmotile.make_lightcone_slice_interpolator` computes. This does *not*
+        make Limber's approximation applicable: that needs ``dr >> r / l``, which one
+        slice is nowhere near.
+
+        Pass the top-hat that was actually applied. Where the box carries a cell window
+        of its own the interpolator applies only the remainder, so that is
+        ``cosmotile.residual_radial_width(radial_width, coeval_cell_width)`` rather than
+        the ``radial_width`` you asked it for.
+    n_radial_nodes
+        Gauss-Legendre nodes used for the radial average, or ``None`` (the default) to
+        choose from the data. ``j_ell(kr)`` runs through about ``k w / 2 pi`` periods
+        across a window of width ``w``, and Gauss-Legendre integrates a polynomial of
+        degree ``2n - 1`` exactly, so the nodes needed grow with ``k_max w``. The
+        default takes the largest ``|k|`` present with a margin, which reproduces a
+        far denser rule to round-off while staying much cheaper.
     nbin
         Number of ``|k|`` bins used to compress the mode sum, or ``None`` (the default)
         to choose it from ``radius``. ``j_ell`` depends on the modes only through
@@ -277,9 +308,28 @@ def discrete_angular_power(
     good = summed > 0  # empty bins contribute nothing and are dropped
     wbin, kbin = summed[good], moment[good] / summed[good]
 
+    if radial_width == 0:
+        return np.array(
+            [
+                (4 * np.pi / volume) * np.sum(wbin * spherical_jn(int(ell), kbin * radius) ** 2)
+                for ell in ells
+            ]
+        )
+
+    # The r^2 volume element is what makes the average the mean over a shell of finite
+    # thickness, so it is in the kernel here exactly as it is in the tiling.
+    if n_radial_nodes is None:
+        n_radial_nodes = _MIN_RADIAL_NODES + int(np.ceil(kbin.max() * radial_width / 2))
+    nodes, node_weights = np.polynomial.legendre.leggauss(n_radial_nodes)
+    radii = radius + 0.5 * radial_width * nodes
+    kernel = node_weights * radii**2
+    kernel = kernel / kernel.sum()
+    kr = np.outer(radii, kbin)
+
     return np.array(
         [
-            (4 * np.pi / volume) * np.sum(wbin * spherical_jn(int(ell), kbin * radius) ** 2)
+            (4 * np.pi / volume)
+            * np.sum(wbin * np.sum(kernel[:, None] * spherical_jn(int(ell), kr), axis=0) ** 2)
             for ell in ells
         ]
     )

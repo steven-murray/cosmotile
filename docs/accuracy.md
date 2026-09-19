@@ -533,13 +533,22 @@ with a correction of order $(\Delta r/r)^2$ from the volume weighting.
 Averaging radially turns the slice into a projection with a normalised radial kernel
 $q(r)$ — the $q$ of "Why not Limber?" above — so the thin-shell $C_\ell$ no longer
 describes it: $j_\ell^2(kr)$ must be replaced by
-$\left|\int \mathrm{d}r \, q(r) \, j_\ell(kr)\right|^2$. This does **not** bring Limber
-back: Limber needs the radial kernel to be wide compared with the oscillation scale of
-$j_\ell$, i.e. $\Delta r \gg r/\ell$, which for a one-cell slice at $r = 80$ cells means
-$\ell \gg 80$. A single slice is nowhere near that however it is averaged; stack many
-into a genuine projection and Limber applies in the usual way. What the radial average
-*does* change is the prediction, so do not average radially and then check against the
-thin-shell formula.
+$\left|\int \mathrm{d}r \, q(r) \, j_\ell(kr)\right|^2$. Pass `radial_width` to
+{func}`~cosmotile.theory.discrete_angular_power` and it evaluates exactly that — give it
+the top-hat actually applied, which is
+`residual_radial_width(radial_width, coeval_cell_width)` when the box carries a cell
+window of its own. `tests/test_angular_power.py` checks a radially averaged shell
+against it.
+
+This does **not** bring Limber back: Limber needs the radial kernel to be wide compared
+with the oscillation scale of $j_\ell$, i.e. $\Delta r \gg r/\ell$, which for a one-cell
+slice at $r = 80$ cells means $\ell \gg 80$. A single slice is nowhere near that however
+it is averaged; stack many into a genuine projection and Limber applies in the usual way.
+
+One thing to watch: the radial window does not only suppress. Below the spectral cut-off
+it does, monotonically in the width. *Above* it, where a thin shell has almost no signal
+left, the window reaches radii at which $j_\ell(kr)$ is larger than at the shell itself
+and the predicted power goes *up*. Both regimes are pinned in `tests/test_theory.py`.
 
 Both defaults (`subsample_level=0`, `n_radial_samples=1`) reproduce point sampling
 exactly, so nothing changes unless you ask for it — but "point sampling" always means
