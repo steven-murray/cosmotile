@@ -14,6 +14,11 @@ The short-axis cases are a regression test. The stencil for order 5 spans six sa
 so on an axis of two cells it wraps around the box three times; an implementation that
 wrapped by subtracting a single period would index off the end of the array. The
 window tests in ``test_theory.py`` tile a ``(16, 2, 2)`` box and caught exactly that.
+
+These run whether or not ``numba`` is installed. Without it the kernel is the same
+code as a plain Python loop -- far too slow to tile with, but the boxes here are tiny,
+and it is the only way either to check that fallback or to measure it: a jit-compiled
+function is invisible to coverage.
 """
 
 import numpy as np
@@ -47,9 +52,6 @@ def _reference(box: np.ndarray, coords: np.ndarray, order: int) -> np.ndarray:
 )
 def test_gather_agrees_with_scipy(order: int, shape: tuple[int, ...]) -> None:
     """The whole contract, including where the stencil wraps the box several times."""
-    if not _gather.NUMBA:  # pragma: no cover - the nojit session
-        pytest.skip("numba is not installed")
-
     rng = np.random.default_rng(20260920)
     box = rng.standard_normal(shape)
     # Well outside the box, since the periodic wrap is part of what is being checked.
@@ -63,9 +65,6 @@ def test_gather_agrees_with_scipy(order: int, shape: tuple[int, ...]) -> None:
 
 def test_order_zero_is_bit_exact() -> None:
     """Nearest neighbour returns a value that is *in* the box, so nothing is rounded."""
-    if not _gather.NUMBA:  # pragma: no cover - the nojit session
-        pytest.skip("numba is not installed")
-
     rng = np.random.default_rng(5)
     box = rng.standard_normal((12, 12, 12))
     coords = rng.uniform(-40.0, 40.0, size=(3, 200))

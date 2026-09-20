@@ -62,7 +62,7 @@ dev = [
     "pytest-cov>=3.0.0",
     "pre-commit",
     'ruff',
-    "powerbox>=0.8",
+    "powerbox>=1.0",
     "healpy>=1.16",
 ]
 
