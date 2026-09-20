@@ -172,6 +172,10 @@ extend-select = [
 "docs/make_accuracy_figures.py" = [
     "T",  # it is a command-line script; printing where it wrote the figures is the point
 ]
+"benchmarks/*.py" = [
+    "T",     # likewise: these are scripts, and progress on a long sweep is the point
+    "BLE",   # a backend that OOMs is a result to record, not a crash
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = 'numpy'

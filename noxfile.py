@@ -55,6 +55,18 @@ def tests_nojit(session: nox.Session) -> None:
 
 
 @nox.session(python=python_versions[0])
+def benchmarks(session: nox.Session) -> None:
+    """Re-measure the performance numbers in the documentation.
+
+    Not part of the default sessions and not run in CI: shared runners are too noisy
+    for absolute timings and have no GPU. Run it on the machine you care about, and
+    commit the JSON it writes.
+    """
+    session.install(".[all]")
+    session.run("python", "benchmarks/run_benchmarks.py", *session.posargs)
+
+
+@nox.session(python=python_versions[0])
 def coverage(session: nox.Session) -> None:
     """Produce the coverage report."""
     args = session.posargs or ["report"]
@@ -90,7 +102,7 @@ def docs_build(session: nox.Session) -> None:
         args.insert(0, "--color")
 
     session.install(".")
-    session.install("sphinx", "sphinx-click", "furo", "myst-parser")
+    session.install("sphinx", "furo", "myst-parser")
 
     build_dir = Path("docs", "_build")
     if build_dir.exists():
@@ -104,7 +116,7 @@ def docs(session: nox.Session) -> None:
     """Build and serve the documentation with live reloading on file changes."""
     args = session.posargs or ["--open-browser", "docs", "docs/_build"]
     session.install(".")
-    session.install("sphinx", "sphinx-autobuild", "sphinx-click", "furo", "myst-parser")
+    session.install("sphinx", "sphinx-autobuild", "furo", "myst-parser")
 
     build_dir = Path("docs", "_build")
     if build_dir.exists():
