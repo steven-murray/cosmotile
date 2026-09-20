@@ -458,3 +458,188 @@ def test_single_precision_costs_about_a_part_in_a_million() -> None:
         )
     assert single.dtype == np.float32
     assert np.abs(single - expected).max() / expected.std() < 1e-4
+
+
+# ----------------------------------------------------------------------------- rsds
+
+
+def _rsd_case(regular: bool, nslice: int = 24, nangles: int = 9):
+    rng = np.random.default_rng(3)
+    distance = (
+        np.linspace(60.0, 120.0, nslice) if regular else np.sort(rng.uniform(60.0, 120.0, nslice))
+    )
+    field = rng.standard_normal((nslice, nangles)) + 5.0
+    displacement = 2.0 * rng.standard_normal((nslice, nangles))
+    return distance, field, displacement
+
+
+@pytest.mark.parametrize("outside", ["empty", "edge"])
+@pytest.mark.parametrize("regular", [True, False], ids=["regular", "irregular"])
+@pytest.mark.parametrize("n_subcells", [1, 4])
+def test_rsds_match_the_numpy_backend(regular: bool, n_subcells: int, outside: str) -> None:
+    """Including on an irregular grid, where the NumPy path uses a FITPACK spline.
+
+    That spline has no JAX equivalent, and it is *not* close to the linear interpolation
+    the regular branch uses -- so it is carried across as the matrix recovered by
+    probing it, rather than approximated.
+    """
+    from astropy import units as un
+
+    from cosmotile._rsd import make_rsd_plan
+
+    distance, field, displacement = _rsd_case(regular)
+    expected = np.asarray(
+        cmt.apply_rsds(
+            field,
+            displacement * un.pixel,
+            distance * un.pixel,
+            n_subcells=n_subcells,
+            outside=outside,
+        )
+    )
+    plan = make_rsd_plan(
+        distance,
+        n_subcells=n_subcells,
+        # Generously more than the data need: the answer must not depend on it.
+        max_displacement=3 * float(np.abs(displacement).max()),
+        outside=outside,
+    )
+    got = np.asarray(cjax.apply_rsds(jnp.asarray(field), jnp.asarray(displacement), plan))
+    np.testing.assert_allclose(got, expected, atol=1e-10, rtol=1e-10)
+
+
+@pytest.mark.parametrize("outside", ["empty", "edge"])
+def test_the_answer_does_not_depend_on_how_much_padding_was_allocated(outside: str) -> None:
+    """``max_displacement`` is a memory bound, not a physical parameter.
+
+    Under either convention, allocating more padding than the displacement needs cannot
+    change the answer -- which is what makes it safe to pass a generous bound rather than
+    the exact largest one. That only holds because the displacement outside the grid is
+    held at its boundary value; extrapolating it, as versions before 2.0 did, flings the
+    far padding arbitrarily far and the total then grows with the padding.
+    """
+    from cosmotile._rsd import make_rsd_plan
+
+    distance, field, displacement = _rsd_case(regular=True)
+    bound = float(np.abs(displacement).max())
+
+    results = [
+        np.asarray(
+            cjax.apply_rsds(
+                jnp.asarray(field),
+                jnp.asarray(displacement),
+                make_rsd_plan(
+                    distance,
+                    n_subcells=4,
+                    max_displacement=scale * bound,
+                    outside=outside,
+                ),
+            )
+        )
+        for scale in (2.0, 4.0, 8.0)
+    ]
+    for other in results[1:]:
+        np.testing.assert_allclose(other, results[0], atol=1e-10, rtol=1e-10)
+
+
+@pytest.mark.parametrize("shift", [0.3, -0.3, 1.7, -2.4, 9.0, -9.0, -40.0])
+def test_cloud_in_cell_matches_the_numpy_kernel(shift: float) -> None:
+    """The scatter must agree with the loop, including for material pushed off the ends.
+
+    This is the trap JAX's scatter sets. ``mode="drop"`` discards indices at or past the
+    end of an axis, but still reads a *negative* index Python-style -- so without an
+    explicit mask, material displaced off the near edge silently reappears at the far
+    edge. It looks entirely plausible and is completely wrong, so the negative shifts
+    here are the point of the test.
+    """
+    from cosmotile.cic import cloud_in_cell_los
+    from cosmotile.jax._rsd import _cloud_in_cell
+
+    rng = np.random.default_rng(0)
+    field = rng.standard_normal((10, 3))
+    displacement = np.full((10, 3), shift)
+
+    np.testing.assert_allclose(
+        np.asarray(_cloud_in_cell(jnp.asarray(field), jnp.asarray(displacement))),
+        cloud_in_cell_los(field, displacement),
+        atol=1e-15,
+    )
+
+
+def test_mass_can_only_ever_leave_the_grid() -> None:
+    """Displacement moves material; it never creates any.
+
+    Before version 2.0 the padding held replicated edge values rather than being empty,
+    so that fiction could flow back in and the total could *grow*. It cannot now, for
+    either backend, and the total is independent of how much padding was allocated.
+    """
+    from cosmotile._rsd import make_rsd_plan
+
+    distance, field, displacement = _rsd_case(regular=True)
+    field = np.abs(field)  # a non-negative field, so "more mass" is unambiguous
+
+    plan = make_rsd_plan(distance, n_subcells=4, max_displacement=float(np.abs(displacement).max()))
+    got = np.asarray(cjax.apply_rsds(jnp.asarray(field), jnp.asarray(displacement), plan))
+
+    assert got.sum() <= field.sum() + 1e-9
+
+
+@pytest.mark.parametrize("regular", [True, False], ids=["regular", "irregular"])
+def test_zero_displacement_is_an_exact_round_trip(regular: bool) -> None:
+    """Refining and re-averaging must be exact inverses, or nothing else is trustworthy."""
+    from cosmotile._rsd import make_rsd_plan
+
+    distance, field, _ = _rsd_case(regular)
+    plan = make_rsd_plan(distance, n_subcells=4, max_displacement=0.0)
+    got = np.asarray(cjax.apply_rsds(jnp.asarray(field), jnp.zeros_like(jnp.asarray(field)), plan))
+    np.testing.assert_allclose(got, field, atol=1e-11, rtol=1e-11)
+
+
+def test_rsds_are_differentiable_in_both_arguments() -> None:
+    """Linearly in the field, piecewise-linearly in the displacement."""
+    from cosmotile._rsd import make_rsd_plan
+
+    distance, field, displacement = _rsd_case(regular=True, nslice=12, nangles=3)
+    plan = make_rsd_plan(distance, n_subcells=2, max_displacement=8.0)
+    field = jnp.asarray(field)
+    displacement = jnp.asarray(displacement)
+
+    def loss(f, d):
+        return jnp.sum(cjax.apply_rsds(f, d, plan) ** 2)
+
+    step = 1e-6
+    for argnum, primal in ((0, field), (1, displacement)):
+        gradient = jax.grad(loss, argnums=argnum)(field, displacement)
+        index = (3, 1)
+        args_up = [field, displacement]
+        args_down = [field, displacement]
+        args_up[argnum] = primal.at[index].add(step)
+        args_down[argnum] = primal.at[index].add(-step)
+        difference = (loss(*args_up) - loss(*args_down)) / (2 * step)
+        np.testing.assert_allclose(float(gradient[index]), float(difference), rtol=1e-4)
+
+
+def test_make_rsd_plan_validates_its_arguments() -> None:
+    from cosmotile._rsd import make_rsd_plan
+
+    distance = np.linspace(60.0, 120.0, 8)
+    with pytest.raises(ValueError, match="1D array"):
+        make_rsd_plan(distance[:, None], max_displacement=1.0)
+    with pytest.raises(ValueError, match="at least 2 slices"):
+        make_rsd_plan(distance[:1], max_displacement=1.0)
+    with pytest.raises(ValueError, match="n_subcells must be a positive integer"):
+        make_rsd_plan(distance, n_subcells=0, max_displacement=1.0)
+    with pytest.raises(ValueError, match="max_displacement must be non-negative"):
+        make_rsd_plan(distance, max_displacement=-1.0)
+    with pytest.raises(ValueError, match="outside must be"):
+        make_rsd_plan(distance, max_displacement=1.0, outside="reflect")
+
+
+def test_apply_rsds_checks_its_shapes_against_the_plan() -> None:
+    from cosmotile._rsd import make_rsd_plan
+
+    plan = make_rsd_plan(np.linspace(60.0, 120.0, 8), max_displacement=1.0)
+    with pytest.raises(ValueError, match="same shape"):
+        cjax.apply_rsds(jnp.zeros((8, 3)), jnp.zeros((8, 4)), plan)
+    with pytest.raises(ValueError, match="plan was built for 8"):
+        cjax.apply_rsds(jnp.zeros((6, 3)), jnp.zeros((6, 3)), plan)

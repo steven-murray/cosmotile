@@ -18,6 +18,8 @@ reproduce shapes that cannot be traced, this module offers one function per oper
     The primitive, when you already have coordinates.
 :func:`lightcone_scan`
     Fold a function over many shells without materialising the lightcone.
+:func:`apply_rsds`
+    Redshift-space distortions, on a plan built by :func:`make_rsd_plan`.
 
 Why it is worth it
 ------------------
@@ -62,13 +64,18 @@ from typing import Any
 import jax
 
 from .._plan import PrefilteredCoeval, ShellSampling, make_shell_sampling
+from .._rsd import RsdPlan, make_rsd_plan
 from ._interp import shell, shell_from_coordinates
 from ._prefilter import prefilter_coeval
+from ._rsd import apply_rsds
 
 __all__ = [
     "PrefilteredCoeval",
+    "RsdPlan",
     "ShellSampling",
+    "apply_rsds",
     "lightcone_scan",
+    "make_rsd_plan",
     "make_shell_sampling",
     "prefilter_coeval",
     "shell",
@@ -78,6 +85,21 @@ __all__ = [
 
 jax.tree_util.register_dataclass(
     PrefilteredCoeval, data_fields=["coefficients"], meta_fields=["order"]
+)
+jax.tree_util.register_dataclass(
+    RsdPlan,
+    data_fields=[
+        "fine_widths",
+        "refine_index",
+        "source_mask",
+        "interp_index",
+        "interp_weight",
+        "rebin_index",
+        "rebin_frac",
+        "out_widths",
+        "fine_cumulative",
+    ],
+    meta_fields=["nslice", "n_near", "n_far", "n_subcells", "outside"],
 )
 jax.tree_util.register_dataclass(
     ShellSampling,

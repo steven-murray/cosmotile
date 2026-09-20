@@ -883,14 +883,16 @@ def apply_rsds(
     los_displacement: np.ndarray,
     distance: np.ndarray,
     n_subcells: int = 4,
+    *,
+    outside: Literal["empty", "edge"] = "empty",
 ) -> np.ndarray:
     """Apply redshift-space distortions to a field.
 
     Notes
     -----
     To ensure that we cover all the slices in the field after the velocities have
-    been applied, we extrapolate the densities and velocities on either end by the
-    maximum velocity offset in the field.
+    been applied, the grid is padded on either end by the largest displacement that can
+    reach it. What that padding *holds* is ``outside``'s business -- see below.
     Then, to ensure we don't pick up cells with zero particles (after displacement),
     we interpolate the slices onto a finer regular grid (in comoving distance) and
     then displace the field on that grid.
@@ -937,6 +939,35 @@ def apply_rsds(
         The number of sub-cells per (smallest) output slice used for the displacement.
         Larger values resolve the displacement field more finely and give a more
         accurate answer, at proportionally greater cost.
+    outside
+        What the field does beyond the range ``distance`` covers. This is a genuine
+        choice, not an implementation detail: your data say nothing about what lies
+        outside them, and displacement moves material across that boundary in both
+        directions, so the answer near the ends depends on the assumption you make.
+
+        ``"empty"`` (the default) takes the field to be zero outside. Material displaced
+        off either end is gone, nothing flows in, and the total can only decrease.
+
+        ``"edge"`` continues the field at its first and last slice values, moving with
+        the boundary displacement. Material flows in from outside as well as out, so the
+        total may rise or fall. This is the assumption to make when your slices are a
+        window cut out of a larger field -- a chunk of a longer lightcone, say -- rather
+        than the whole of it.
+
+        Either way the result is independent of how much padding is allocated, provided
+        there is enough of it; with ``"edge"`` the displacement outside the grid is held
+        at its boundary value rather than extrapolated, since a linearly extrapolated
+        velocity grows without bound and would make the answer depend on the padding.
+
+        Versions before 2.0 always behaved roughly like ``"edge"``, but extrapolated the
+        displacement, so the amount of padding -- itself set by the data -- changed the
+        answer, and the total could exceed what went in.
+
+    Returns
+    -------
+    distorted
+        The field in redshift space, same shape as ``field``, again as radial cell
+        averages.
     """
     if field.shape != los_displacement.shape:
         raise ValueError("field and los_displacement must have the same shape")
@@ -946,6 +977,8 @@ def apply_rsds(
         raise ValueError("field and distance must have the same number of slices")
     if not isinstance(n_subcells, (int, np.integer)) or n_subcells < 1:
         raise ValueError("n_subcells must be a positive integer")
+    if outside not in ("empty", "edge"):
+        raise ValueError("outside must be 'empty' or 'edge'")
 
     is_regular = np.allclose(np.diff(np.diff(distance)), 0.0)
     interpolator = RegularGridInterpolator if is_regular else RectBivariateSpline
@@ -966,33 +999,67 @@ def apply_rsds(
     body = np.repeat(widths / n_subcells, n_subcells)
 
     # Pad each end, in whole sub-cells of the adjacent slice, so that material displaced
-    # off the grid still has somewhere to land -- and is correctly counted as gone.
-    n_near = int(np.ceil(max(np.max(los[0]), 0.0) / body[0]))
-    n_far = int(np.ceil(-min(np.min(los[-1]), 0.0) / body[-1]))
+    # off the grid still has somewhere to land -- and is correctly counted as gone. With
+    # ``outside="edge"`` material also flows *in*, from as far out as the boundary
+    # displacement reaches, so both ends are padded by the largest displacement there.
+    if outside == "edge":
+        # How far out material can start and still reach the grid is set by the
+        # displacement *at the boundary* -- which is the interpolator extrapolated half a
+        # slice past the outermost centres, and so can exceed anything at a centre. Ask
+        # it directly rather than guessing from ``los``, and keep a sub-cell of margin.
+        ang = np.arange(field.shape[1])
+        if is_regular:
+            boundary = RegularGridInterpolator(
+                (dist, ang), los, bounds_error=False, fill_value=None
+            )(
+                (
+                    np.repeat(edges[[0, -1]], ang.size),
+                    np.tile(ang, 2),
+                )
+            )
+        else:
+            boundary = RectBivariateSpline(dist, ang, los)(edges[[0, -1]], ang)
+        reach = float(np.max(np.abs(boundary)))
+        n_near = int(np.ceil(reach / body[0])) + 1
+        n_far = int(np.ceil(reach / body[-1])) + 1
+    else:
+        n_near = int(np.ceil(max(np.max(los[0]), 0.0) / body[0]))
+        n_far = int(np.ceil(-min(np.min(los[-1]), 0.0) / body[-1]))
     fine_widths = np.concatenate((np.full(n_near, body[0]), body, np.full(n_far, body[-1])))
     fine_edges = np.concatenate(([edges[0] - n_near * body[0]], np.zeros(fine_widths.size)))
     fine_edges[1:] = fine_edges[0] + np.cumsum(fine_widths)
     fine_grid = 0.5 * (fine_edges[:-1] + fine_edges[1:])
 
     # Refine the field conservatively: every fine cell takes the value of the output
-    # slice it lies in (and the end slices' values beyond the grid). Unlike interpolating
-    # it, this leaves the mean over each output slice untouched, so with no displacement
-    # the refine-displace-average round trip is the identity.
+    # slice it lies in. Unlike interpolating it, this leaves the mean over each output
+    # slice untouched, so with no displacement the refine-displace-average round trip is
+    # the identity.
+    #
+    # What the padding holds is ``outside``'s business, and it is genuinely a choice --
+    # the data say nothing about a field beyond the range they cover.
     values = np.asarray(field)
-    fine_field = np.concatenate(
-        (
-            np.repeat(values[:1], n_near, axis=0),
-            np.repeat(values, n_subcells, axis=0),
-            np.repeat(values[-1:], n_far, axis=0),
-        )
-    )
+    if outside == "edge":
+        pad_near = np.repeat(values[:1], n_near, axis=0)
+        pad_far = np.repeat(values[-1:], n_far, axis=0)
+    else:
+        pad_near = np.zeros((n_near, values.shape[1]))
+        pad_far = np.zeros((n_far, values.shape[1]))
+    fine_field = np.concatenate((pad_near, np.repeat(values, n_subcells, axis=0), pad_far))
 
     # The displacement, by contrast, is a smooth function sampled at the slice centres,
     # so interpolate it -- then express it in units of the local fine cell, which is what
     # cloud-in-cell works in.
+    # Outside the grid the displacement is held at its boundary value rather than
+    # extrapolated. Linear extrapolation grows without bound, so with ``outside="edge"``
+    # the far padding would be flung arbitrarily far and the answer would depend on how
+    # much of it there was; holding it constant is both physical and well defined. Fine
+    # cells *inside* the grid but beyond the outermost slice centres still extrapolate,
+    # which is what the versions before 2.0 did everywhere.
+    probe = np.clip(fine_grid, edges[0], edges[-1]) if outside == "edge" else fine_grid
+
     ang_coords = np.arange(field.shape[1])
     if is_regular:
-        x, y = np.meshgrid(fine_grid, ang_coords, indexing="ij")
+        x, y = np.meshgrid(probe, ang_coords, indexing="ij")
         fine_rsd = interpolator(
             (dist, ang_coords),
             los,
@@ -1000,7 +1067,7 @@ def apply_rsds(
             fill_value=None,
         )((x.flatten(), y.flatten())).reshape(x.shape)
     else:
-        fine_rsd = interpolator(dist, ang_coords, los)(fine_grid, ang_coords)
+        fine_rsd = interpolator(dist, ang_coords, los)(probe, ang_coords)
     fine_rsd = fine_rsd / fine_widths[:, None]
 
     # ``fine_grid`` runs from near to far, but ``los_displacement`` is positive towards

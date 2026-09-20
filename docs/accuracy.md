@@ -646,11 +646,34 @@ lies in, so with zero displacement the whole refine–displace–average round t
 exactly the identity, at any `n_subcells`. The residual error is therefore the
 cloud-in-cell kernel alone, which is a smoothing of roughly one sub-cell.
 
-**Padding at the ends.** To catch material displaced in from beyond the grid, the field
-and the displacement are extrapolated past the first and last slices. Mass is conserved
-exactly for parcels that stay on the grid, but the end slices can gain material from
-that extrapolated region — so treat the outermost few slices of a lightcone as you would
-any other boundary.
+**What lies outside: `outside`.** Displacement moves material across the ends of your
+grid in both directions, and your data say nothing about what is out there. That is a
+genuine modelling choice, not an implementation detail, so it is a keyword.
+
+`outside="empty"` (the default) takes the field to be zero beyond the range `distance`
+covers. Material displaced off either end is gone, nothing flows in, and the total can
+only fall. This is the honest choice when your slices *are* the field.
+
+`outside="edge"` continues the field at its first and last slice values, moving with the
+boundary displacement. Material flows in as well as out and the total may rise or fall.
+This is the choice when your slices are a window cut out of something larger — a chunk of
+a longer lightcone, say. It is also the convention under which a uniform field displaced
+uniformly comes back unchanged, which `"empty"` cannot reproduce because it has no
+material to supply.
+
+Under either convention the result is **independent of how much padding is allocated**,
+provided there is enough of it. That is worth stating because it was not true before
+version 2.0, which always behaved roughly like `"edge"` but extrapolated the displacement
+linearly across the padding. An extrapolated velocity grows without bound, so the further
+out a padding cell sat the further it was flung, and material that was never there kept
+arriving: the total could exceed what went in, and the answer depended on how many
+sub-cells of padding the data happened to call for. The displacement is now held at its
+boundary value outside the grid, which is both physical and well defined. (Fine cells
+*inside* the grid but beyond the outermost slice centres still extrapolate, as before.)
+
+Either way, the outermost slices are where the assumption bites hardest. Extend the grid
+past the region you intend to analyse by more than the largest displacement in it, and
+the choice stops mattering where it matters.
 
 ## Reproducing these figures
 
