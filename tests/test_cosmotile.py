@@ -256,9 +256,14 @@ def test_lightcone_slice_vector_field() -> None:
         )
     )
 
-    assert los[0] == -1 * un.pixel
-    assert los[10] == 1 * un.pixel
-    assert los[20] == -1 * un.pixel
+    # A uniform unit field along x, read along the line of sight: -1 looking down +x,
+    # +1 looking back along it, and nothing at the poles. Compared approximately rather
+    # than exactly because the value comes out of an interpolation and a normalisation,
+    # so which summation order lands exactly on 1.0 is an accident of the backend --
+    # numba's parallel gather and scipy's loop differ here in the last bit.
+    assert np.isclose(los[0], -1 * un.pixel)
+    assert np.isclose(los[10], 1 * un.pixel)
+    assert np.isclose(los[20], -1 * un.pixel)
     assert np.isclose(los[21], 0 * un.pixel)
     assert np.isclose(los[22], 0 * un.pixel)
 

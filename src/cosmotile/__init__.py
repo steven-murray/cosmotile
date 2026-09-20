@@ -13,7 +13,7 @@ from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
 from scipy.ndimage import map_coordinates, spline_filter
 from scipy.spatial.transform import Rotation
 
-from . import _version
+from . import _gather, _version
 from . import theory as theory
 from ._geometry import residual_radial_width as residual_radial_width
 from ._plan import PrefilteredCoeval
@@ -284,6 +284,12 @@ def _interpolate_coeval(
     Orders 0 and 1 use interpolating kernels and need no pre-filter, so they are
     passed straight through.
 
+    The gather itself runs through :mod:`cosmotile._gather` when ``numba`` is installed,
+    which is the same mathematics across every core rather than one, and falls back to
+    :func:`scipy.ndimage.map_coordinates` when it is not. The two agree to roundoff, and
+    exactly at order 0; :func:`cosmotile._gather.use_scipy_gather` forces the fallback,
+    which is how you find out whether the kernel is responsible if a number ever moves.
+
 
     The filtered array depends only on ``(coeval, order)``, so when tiling one box onto
     many shells it can be computed once with :func:`prefilter_coeval` instead of once per
@@ -306,13 +312,18 @@ def _interpolate_coeval(
         if order > 1:
             values_in = spline_filter(values_in, order=order, mode="grid-wrap", output=np.float64)
 
-    values = map_coordinates(
-        values_in,
-        coordinates=coordinates,
-        order=order,
-        mode="grid-wrap",  # this wraps each dimension.
-        prefilter=False,  # we have already pre-filtered above, if required.
-    )
+    if _gather.available():
+        # The same mathematics as map_coordinates, across every core instead of one.
+        # Agrees with it to roundoff, and exactly at order 0.
+        values = _gather.gather(values_in, coordinates, order).astype(values_in.dtype, copy=False)
+    else:
+        values = map_coordinates(
+            values_in,
+            coordinates=coordinates,
+            order=order,
+            mode="grid-wrap",  # this wraps each dimension.
+            prefilter=False,  # we have already pre-filtered above, if required.
+        )
 
     return _average_subsamples(values, weights)
 
