@@ -20,18 +20,19 @@ import numpy as np
 
 from ._spline import MAX_ORDER
 
-# `numba` is untyped, so both names are `Any` either way -- which is what lets the
-# kernel below call `prange` under mypy's `disallow_untyped_calls`.
-njit: Any
-prange: Any
-
 try:
     from numba import njit, prange
 
     NUMBA = True
 except ImportError:  # pragma: no cover - exercised by the tests-nojit session
     NUMBA = False
-    prange = range
+
+# numba ships no type stubs, so `prange` is untyped when it is installed and a plain
+# `range` when it is not. Binding it once, as `Any`, is what lets the kernel's loop
+# type-check either way. numba resolves `prange` by value rather than by name, so the
+# alias does not stop it parallelising -- `tests/test_gather.py` would catch it if the
+# results diverged, and the benchmark would catch the lost speed.
+_parallel_range: Any = prange if NUMBA else range
 
 
 #: Set by :func:`use_scipy_gather`. Module state rather than an argument, because the
@@ -69,7 +70,7 @@ def _gather_impl(coefficients: Any, coordinates: Any, order: int, out: Any) -> A
     sizes = (n0, n1, n2)
     ntap = order + 1
 
-    for point in prange(coordinates.shape[1]):
+    for point in _parallel_range(coordinates.shape[1]):
         weights = np.empty((3, MAX_ORDER + 1), np.float64)
         indices = np.empty((3, MAX_ORDER + 1), np.int64)
 
