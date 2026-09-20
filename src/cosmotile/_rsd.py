@@ -24,8 +24,6 @@ edges that are known before any field arrives, so the traced code is a gather an
 difference.
 """
 
-from __future__ import annotations
-
 import dataclasses
 from typing import Any, Literal
 
@@ -159,7 +157,7 @@ def make_rsd_plan(
     *,
     n_subcells: int = 4,
     max_displacement: float,
-    outside: Literal["empty", "edge"] = "empty",
+    outside: Literal["empty", "edge"] = "edge",
 ) -> RsdPlan:
     """Precompute everything about an RSD application that the field values do not set.
 
@@ -187,9 +185,9 @@ def make_rsd_plan(
         padding is also where material flows *in* from -- make it comfortably larger than
         the displacement at the first and last slices.
     outside
-        What the field does beyond the range ``distance`` covers: ``"empty"`` for zero,
-        ``"edge"`` to continue it at the first and last slice values. See
-        :func:`cosmotile.apply_rsds`, whose keyword this mirrors.
+        What the field does beyond the range ``distance`` covers: ``"edge"`` (the
+        default) continues it at the first and last slice values, ``"empty"`` takes it
+        to be zero. See :func:`cosmotile.apply_rsds`, whose keyword this mirrors.
 
     Returns
     -------

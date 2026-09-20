@@ -1,73 +1,46 @@
-r"""A JAX backend for ``cosmotile``.
+"""A JAX backend for ``cosmotile``.
 
-Import this only if you want it: ``import cosmotile.jax`` requires ``jax``, which is an
-optional dependency (``pip install cosmotile[jax]``). The NumPy API in
-:mod:`cosmotile` never imports it.
+Requires ``jax``, an optional dependency: ``pip install cosmotile[jax]``. The NumPy API
+in :mod:`cosmotile` never imports it.
 
-This is deliberately **not** a mirror of the NumPy API. The functions here are pure and
-array-in, array-out, so that you can wrap them in :func:`jax.jit`, :func:`jax.vmap` or
-:func:`jax.grad` yourself. The NumPy API's lazy iterators, ``astropy`` units and
-value-dependent validation are all useful there and impossible here, so rather than
-reproduce shapes that cannot be traced, this module offers one function per operation:
+The functions here take arrays and return arrays, so you can wrap them in
+:func:`jax.jit`, :func:`jax.vmap` or :func:`jax.grad`. They compute the same thing as the
+NumPy API, which returns lazy iterators and carries ``astropy`` units -- neither of which
+survives being traced -- so this is a smaller, flatter surface rather than a mirror of it.
 
 :func:`prefilter_coeval`
-    Box to B-spline coefficients, as an FFT deconvolution.
+    Convert a box to B-spline coefficients. Needed once, before tiling at order 2 or above.
 :func:`shell`
-    One spherical shell, from a radius and a :class:`~cosmotile._plan.ShellSampling`.
+    Interpolate a box onto one spherical shell.
 :func:`shell_from_coordinates`
-    The primitive, when you already have coordinates.
+    The same, when you already have the pixel coordinates.
 :func:`lightcone_scan`
-    Fold a function over many shells without materialising the lightcone.
+    Build many shells one at a time, accumulating a result instead of keeping them all.
 :func:`apply_rsds`
-    Redshift-space distortions, on a plan built by :func:`make_rsd_plan`.
+    Apply redshift-space distortions.
 
-Why it is worth it
-------------------
-
-**Gradients.** The interpolation is linear in the box values, so the derivative of a
-shell with respect to the coeval box is exactly the transpose gather -- a scatter-add.
-JAX derives it from the forward pass; nothing here hand-writes a VJP. That is what lets
-``cosmotile`` sit inside a differentiable forward model.
-
-**Speed.** The gather is memory-latency bound, which is the workload a GPU is best at.
-Measured on a 256-cubed box at ``nside=256``, order 3: 3.5 Mpix/s through ``scipy``,
-30 Mpix/s through the NumPy backend's own parallel kernel (which is the default whenever
-``numba`` is installed, and is what this has to beat), and 161 Mpix/s in double precision
-or 544 Mpix/s in single through this one.
-
-What to watch out for
----------------------
-
-*Nothing here is decorated with* :func:`jax.jit` *at the top level.* Wrap the call site
-yourself; pre-jitting a library primitive compiles it twice when you jit the caller.
-
-*Use* :func:`lightcone_scan`\\ *, not* :func:`jax.vmap`\\ *, over shells.* A thousand
-shells at ``nside=256`` is 3.1 GB of output and 19 GB of coordinates if they are all
-built at once; scanning builds one shell at a time from shared unit vectors.
-
-*JAX defaults to single precision.* The gather is fine there -- the coordinate is split
-into an integer base and a fraction in ``[0, 1)`` on the host, so it never carries a
-large radius through a ``float32`` -- but expect around ``2e-6`` relative rather than
-``6e-15``. Use :func:`jax.enable_x64` if you need double. This module never
-changes that setting for you: it is global process state, and flipping it would change
-the numerics of every other JAX library you have loaded.
-
-*Gradients with respect to geometry need order 3 or more.* Order 0 has zero gradient
-everywhere and order 1 is only piecewise linear. Gradients with respect to the *box* are
-exact at every order.
+See :doc:`the backend guide </jax-backend>` for what it is for, what you can
+differentiate, and how to keep a large lightcone in memory.
 """
 
+# Needed despite Python 3.11: the documentation build mocks `jax` (see docs/conf.py),
+# so `jax.Array` is a Mock there and an eagerly-evaluated `Array | ...` would fail.
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import jax
+from jax import Array
 
 from .._plan import PrefilteredCoeval, ShellSampling, make_shell_sampling
 from .._rsd import RsdPlan, make_rsd_plan
 from ._interp import shell, shell_from_coordinates
 from ._prefilter import prefilter_coeval
 from ._rsd import apply_rsds
+
+#: Whatever :func:`lightcone_scan` is accumulating -- a scalar, an array, or a pytree.
+Carry = TypeVar("Carry")
 
 __all__ = [
     "PrefilteredCoeval",
@@ -109,26 +82,26 @@ jax.tree_util.register_dataclass(
 
 
 def lightcone_scan(
-    coeval: Any,
+    coeval: Array | PrefilteredCoeval,
     sampling: ShellSampling,
-    radii: Any,
-    body: Any,
-    init: Any,
+    radii: Array,
+    body: Callable[[Carry, Array], Carry],
+    init: Carry,
     *,
     remat: bool = False,
     **kwargs: Any,
-) -> Any:
-    """Fold a function over the shells of a lightcone, one shell at a time.
+) -> Carry:
+    """Build the shells of a lightcone one at a time, accumulating a result.
 
-    ``body(carry, shell) -> carry`` is applied to each shell in turn under
-    :func:`jax.lax.scan`, so only one shell is ever live. That is the difference between
-    a lightcone that fits on a GPU and one that does not: a thousand shells at
-    ``nside=256`` is 3.1 GB of output, and building their coordinates with
-    :func:`jax.vmap` instead would need a further 19 GB.
+    A whole lightcone rarely fits in GPU memory -- a thousand shells at ``nside=256`` is
+    3.1 GB, and building all their coordinates at once needs a further 19 GB. This makes
+    one shell at a time and hands it to ``body``, which combines it with a running
+    result and returns the updated one. Only a single shell is ever in memory.
 
-    Carrying the result rather than collecting the shells is the point. If ``body``
-    returns the shells themselves, reverse-mode needs every shell's cotangent live and
-    the saving is gone -- fold them into whatever statistic you actually want.
+    Use it when what you want out is a *summary* of the lightcone rather than the
+    lightcone itself -- a likelihood, a power spectrum, a sum of squares, the maximum
+    brightness -- which is the usual case when you are differentiating through it. If
+    you want the shells themselves and they fit, just call :func:`shell` in a loop.
 
     Parameters
     ----------
@@ -139,24 +112,41 @@ def lightcone_scan(
     radii
         ``(nshell,)`` shell radii in cells.
     body
-        ``(carry, shell) -> carry``.
+        Called as ``body(result, shell)`` for each shell, and must return the updated
+        result. Both must have the same shape and dtype every time.
     init
-        The initial carry.
+        The starting value of the result, before any shell has been seen.
     remat
-        Re-materialise each step under :func:`jax.checkpoint` instead of saving its
-        residuals. Rarely worth it for the interpolation itself, whose residuals are
-        nearly free because the map is linear with constant indices -- turn it on when
-        ``body`` is the expensive part.
+        Recompute each shell during the backward pass rather than storing it. Only worth
+        it when ``body`` is expensive; the interpolation itself stores almost nothing.
     **kwargs
-        Passed to :func:`shell` (``rotation``, ``origin``).
+        Passed to :func:`shell` -- ``rotation`` and ``origin``.
 
     Returns
     -------
-    carry
-        The final carry.
+    result
+        What ``body`` returned after the last shell.
+
+    Examples
+    --------
+    The mean squared brightness of every shell in a lightcone, differentiated with
+    respect to the box it came from::
+
+        import jax, jax.numpy as jnp
+        from cosmotile import jax as cjax
+
+        radii = jnp.linspace(100.0, 400.0, 1000)
+
+        def total_power(box):
+            coeff = cjax.prefilter_coeval(box, order=3)
+            return cjax.lightcone_scan(
+                coeff, sampling, radii, lambda acc, shell: acc + jnp.mean(shell**2), 0.0
+            )
+
+        gradient = jax.grad(total_power)(box)
     """
 
-    def step(carry: Any, radius: Any) -> tuple[Any, None]:
+    def step(carry: Carry, radius: Array) -> tuple[Carry, None]:
         return body(carry, shell(coeval, sampling, radius, **kwargs)), None
 
     stepper = jax.checkpoint(step) if remat else step

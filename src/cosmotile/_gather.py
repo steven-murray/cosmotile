@@ -10,13 +10,8 @@ with ``scipy`` to roundoff.
 ``numba`` is optional. Without it, this module reports itself unavailable and the NumPy
 backend falls straight back to ``scipy``, exactly as it did before.
 
-The fallback is also reachable deliberately, via :func:`use_scipy_gather`. That matters
-because ``scipy``'s implementation is what the entire physics test suite was calibrated
-against: if a number ever moves, being able to switch this off in one line is how you
-find out whether this kernel was responsible.
+The fallback is also reachable deliberately, via :func:`use_scipy_gather`.
 """
-
-from __future__ import annotations
 
 import math
 from typing import Any

@@ -7,8 +7,6 @@ stay static under :func:`jax.jit` (orders, counts) are kept separate from the fi
 that hold data.
 """
 
-from __future__ import annotations
-
 import dataclasses
 import warnings
 from typing import Any

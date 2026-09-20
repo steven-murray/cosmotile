@@ -1,15 +1,13 @@
 """Redshift-space distortions, as a traced and differentiable computation."""
 
-from __future__ import annotations
-
-from typing import Any
-
 import jax.numpy as jnp
+from jax import Array
+from jax.typing import DTypeLike
 
 from .._rsd import RsdPlan
 
 
-def _deposit(out: Any, index: Any, angle: Any, value: Any, nfine: int) -> Any:
+def _deposit(out: Array, index: Array, angle: Array, value: Array, nfine: int) -> Array:
     """Scatter-add ``value`` at ``index``, discarding anything off either end of the grid.
 
     ``mode="drop"`` alone is not enough. JAX drops indices at or above the axis length,
@@ -21,7 +19,7 @@ def _deposit(out: Any, index: Any, angle: Any, value: Any, nfine: int) -> Any:
     return out.at[jnp.where(index < 0, nfine, index), angle].add(value, mode="drop")
 
 
-def _cloud_in_cell(field: Any, shift: Any) -> Any:
+def _cloud_in_cell(field: Array, shift: Array) -> Array:
     """Deposit each fine cell at its displaced position, splitting between neighbours.
 
     The NumPy original loops and guards each index with ``0 <= i < nfine``; here the
@@ -39,7 +37,7 @@ def _cloud_in_cell(field: Any, shift: Any) -> Any:
     return _deposit(out, lower + 1, angle, frac * field, nfine)
 
 
-def apply_rsds(field: Any, los_displacement: Any, plan: RsdPlan) -> Any:
+def apply_rsds(field: Array, los_displacement: Array, plan: RsdPlan) -> Array:
     """Apply redshift-space distortions to a field, on a fixed plan.
 
     Computes the same thing as :func:`cosmotile.apply_rsds`, but with every shape fixed
@@ -97,7 +95,7 @@ def apply_rsds(field: Any, los_displacement: Any, plan: RsdPlan) -> Any:
     return _rebin(fine_field, fine_widths, plan, dtype)
 
 
-def _rebin(fine_field: Any, fine_widths: Any, plan: RsdPlan, dtype: Any) -> Any:
+def _rebin(fine_field: Array, fine_widths: Array, plan: RsdPlan, dtype: DTypeLike) -> Array:
     """Integrate the displaced fine grid over each output slice.
 
     Integrating rather than sampling the slice centre is what makes ``n_subcells`` a

@@ -48,6 +48,10 @@ jax = [
     # 0.5 for jax.enable_x64 as a context manager and tree_util.register_dataclass.
     "jax>=0.5",
 ]
+# Only needed to regenerate the committed figures; the docs build does not use it.
+figures = [
+    "matplotlib>=3.6",
+]
 dev = [
     "sphinx>=4.3.2",
     "sphinx-autobuild>=2021.3.14",
@@ -63,7 +67,7 @@ dev = [
 ]
 
 all = [
-    "cosmotile[perf,dev,jax]"
+    "cosmotile[perf,dev,jax,figures]"
 ]
 
 [tool.coverage.paths]

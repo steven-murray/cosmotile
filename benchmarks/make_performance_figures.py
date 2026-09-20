@@ -7,12 +7,9 @@ documentation needs neither ``matplotlib`` nor a GPU, in the same spirit as
 
     python benchmarks/make_performance_figures.py
 
-Rows the harness flagged as noisy are drawn hollow rather than dropped. On a
-power-capped laptop GPU a short kernel can measure almost anything, and hiding that
-behind a solid bar would be the wrong kind of tidy.
+Measurements flagged as noisy (e.g. measured on a power-capped laptop GPU) are drawn as
+unfilled markers.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -24,8 +21,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-#: One colour per *series*, not per backend: the two GPU precisions are the comparison
-#: the figure exists to make, so they must not share a colour.
+#: One colour per series, so the two GPU precisions can be told apart.
 SERIES = [
     ("scipy", "float64", "#7f7f7f", "scipy (fallback)"),
     ("numba", "float64", "#1f77b4", "numba (default)"),

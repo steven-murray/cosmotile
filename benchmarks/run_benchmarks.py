@@ -1,30 +1,22 @@
 """Measure how fast ``cosmotile`` tiles, across backends, orders and precisions.
 
-Run manually and commit the result; nothing builds this at documentation time, in the
-same spirit as ``docs/make_accuracy_figures.py``::
+Run manually and commit the result::
 
     python benchmarks/run_benchmarks.py --out benchmarks/results/latest.json
 
-Two things about the method matter enough to state here, because getting either wrong
-changes the answer by nearly an order of magnitude.
+Every row times a public ``cosmotile`` entry point -- the interpolator returned by
+:func:`cosmotile.make_lightcone_slice_interpolator`, or :func:`cosmotile.jax.shell` --
+rather than the library it happens to call underneath, so the numbers stay true if the
+implementation changes.
 
-**The coordinates must be a real shell.** This kernel is bound by memory latency, so
-what it costs depends on how its samples are laid out in the box, not just how many
-there are. Random coordinates -- the obvious thing to benchmark with -- understate real
-throughput by up to eight times, and would make every backend look artificially close
-together. So the sweep tiles actual HEALPix shells.
+The shells are real HEALPix shells, not random coordinates. Tiling is bound by memory
+latency, so what it costs depends on where the samples land and not just how many there
+are; random coordinates understate throughput several-fold and make every backend look
+alike. Pass ``--healpix-order ring`` to measure the cost of the other pixel ordering.
 
-**HEALPix ring order is slower than nested order**, by about a factor of 1.7 on the same
-pixels, purely because neighbouring pixels in the nested scheme land nearer each other
-in the box. That is a real result about how to use the library, so it is measured rather
-than assumed: pass ``--healpix-order ring`` to see it.
-
-The ``scipy`` row is the *fallback*, not the default: with ``numba`` installed the
-NumPy backend gathers through :mod:`cosmotile._gather` instead, which is the ``numba``
-row. Both are measured, because ``scipy`` is the reference everything else is calibrated
-against.
-
-The JAX rows are skipped if ``jax`` is not installed, and the GPU rows if no GPU is
+The ``scipy`` rows are the *fallback* path, reached by turning the parallel gather off.
+They are measured because ``scipy`` is the reference the test suite is calibrated
+against. JAX rows are skipped if ``jax`` is not installed, and GPU rows if no GPU is
 visible, so this runs anywhere and reports what it could measure.
 """
 
@@ -41,8 +33,8 @@ from typing import Any
 
 import numpy as np
 from astropy_healpix import HEALPix
-from scipy.ndimage import map_coordinates, spline_filter
 
+import cosmotile as cmt
 from cosmotile import _gather
 
 ORDERS = (0, 1, 3, 5)
@@ -50,18 +42,11 @@ BOX_SIZES = (128, 256, 384)
 NSIDES = (128, 256)
 
 
-def shell_coordinates(
-    nside: int, radius: float, box_size: int, healpix_order: str = "nested"
-) -> np.ndarray:
-    """Pixel coordinates of a real HEALPix shell, centred in the box."""
+def shell_angles(nside: int, healpix_order: str = "nested") -> tuple[np.ndarray, np.ndarray]:
+    """Latitude and longitude of every pixel of a HEALPix shell, in radians."""
     healpix = HEALPix(nside=nside, order=healpix_order)
     lon, lat = healpix.healpix_to_lonlat(np.arange(healpix.npix))
-    lon = lon.to_value("radian")
-    lat = lat.to_value("radian")
-    polar = np.pi / 2 - lat
-    sin_polar = np.sin(polar)
-    direction = np.array([sin_polar * np.cos(lon), sin_polar * np.sin(lon), np.cos(polar)])
-    return radius * direction + box_size / 2
+    return lat.to_value("radian"), lon.to_value("radian")
 
 
 def time_it(
@@ -72,18 +57,14 @@ def time_it(
 ) -> dict[str, float]:
     """Time ``call``, reporting both the best and the median per-call time.
 
-    Warming up is not a formality on a laptop GPU. The card here idles at a tenth of its
-    maximum clock and ramps under load, then gets pulled back by its power cap -- it had
-    accumulated half a minute of power capping by the time these numbers were taken. A
-    fixed three warm-up calls is enough for a long kernel and nowhere near enough for a
-    short one, so warming continues until ``min_seconds`` of wall clock have gone by as
-    well. Without that, the same kernel measured minutes apart differed by a factor of
-    seven, which is larger than most of the effects being measured.
+    Warming continues until ``min_seconds`` of wall clock have passed as well as
+    ``warmups`` calls, because a GPU that has been idle is also a GPU at its idle clock.
+    Without that, the same kernel measured minutes apart differed by a factor of seven on
+    the laptop card these numbers came from.
 
-    Both statistics are reported, deliberately. The best run is the machine's
-    capability; the median is what you will actually get. When they disagree badly the
-    measurement is not to be trusted, and writing both down makes that visible in the
-    data rather than hiding it behind one authoritative-looking number.
+    Both statistics are reported: the best run is the machine's capability, the median is
+    what you will actually get, and when they disagree badly the measurement is not to be
+    trusted.
     """
     start = time.perf_counter()
     count = 0
@@ -99,50 +80,47 @@ def time_it(
     return {"best": min(times), "median": float(np.median(times))}
 
 
-def _scipy_rows(box: np.ndarray, coords: np.ndarray, order: int) -> dict[str, Any]:
-    coefficients = (
-        spline_filter(box, order=order, mode="grid-wrap", output=np.float64) if order > 1 else box
-    )
-    prefilter_seconds = (
-        time_it(
-            lambda: spline_filter(box, order=order, mode="grid-wrap", output=np.float64),
-            repeats=3,
-            warmups=1,
-            min_seconds=0.0,
+def _numpy_rows(
+    box: np.ndarray,
+    latitude: np.ndarray,
+    longitude: np.ndarray,
+    radius: float,
+    order: int,
+    use_scipy: bool,
+) -> dict[str, Any]:
+    """Time the NumPy backend, through the interpolator a user would build."""
+    _gather.use_scipy_gather(use_scipy)
+    try:
+        prefilter = time_it(
+            lambda: cmt.prefilter_coeval(box, order), repeats=3, warmups=1, min_seconds=0.0
         )["best"]
-        if order > 1
-        else 0.0
-    )
-    timing = time_it(
-        lambda: map_coordinates(
-            coefficients, coords, order=order, mode="grid-wrap", prefilter=False
+        coefficients = cmt.prefilter_coeval(box, order)
+        interpolate = cmt.make_lightcone_slice_interpolator(
+            latitude=latitude,
+            longitude=longitude,
+            distance_to_shell=radius,
+            interpolation_order=order,
         )
-    )
+        timing = time_it(lambda: interpolate(coefficients))
+    finally:
+        _gather.use_scipy_gather(False)
     return {
         "gather_seconds": timing["best"],
         "gather_seconds_median": timing["median"],
-        "prefilter_seconds": prefilter_seconds,
-    }
-
-
-def _numba_rows(box: np.ndarray, coords: np.ndarray, order: int) -> dict[str, Any]:
-    """Time the default NumPy path, which is this whenever ``numba`` is installed."""
-    coefficients = (
-        spline_filter(box, order=order, mode="grid-wrap", output=np.float64) if order > 1 else box
-    )
-    _gather.gather(coefficients, coords, order)  # compile before timing
-    timing = time_it(lambda: _gather.gather(coefficients, coords, order))
-    return {
-        "gather_seconds": timing["best"],
-        "gather_seconds_median": timing["median"],
-        # Same pre-filter as the scipy row: only the gather is replaced.
-        "prefilter_seconds": 0.0,
+        "prefilter_seconds": prefilter,
     }
 
 
 def _jax_rows(
-    box: np.ndarray, coords: np.ndarray, order: int, device: Any, precision: str
+    box: np.ndarray,
+    latitude: np.ndarray,
+    longitude: np.ndarray,
+    radius: float,
+    order: int,
+    device: Any,
+    precision: str,
 ) -> dict[str, Any]:
+    """Time the JAX backend, through :func:`cosmotile.jax.shell`."""
     import contextlib as _contextlib
 
     import jax
@@ -157,24 +135,26 @@ def _jax_rows(
     with x64, jax.default_device(device):
         dtype = jnp.float64 if precision == "float64" else jnp.float32
         array = jnp.asarray(box, dtype=dtype)
-        prefilter_seconds = time_it(
+        sampling = cjax.make_shell_sampling(latitude=latitude, longitude=longitude, order=order)
+
+        prefilter = time_it(
             lambda: jax.block_until_ready(cjax.prefilter_coeval(array, order).coefficients),
             repeats=3,
             warmups=2,
             min_seconds=0.3,
         )["best"]
         coefficients = cjax.prefilter_coeval(array, order)
-        coordinates = jnp.asarray(coords, dtype=dtype)
-        gather = jax.jit(lambda c, x: cjax.shell_from_coordinates(c, x, order=order))
-        result = gather(coefficients, coordinates)
+
+        shell = jax.jit(lambda c: cjax.shell(c, sampling, radius))
+        result = shell(coefficients)
         if result.dtype != dtype:
             raise RuntimeError(f"expected {dtype}, got {result.dtype}")
-        timing = time_it(lambda: jax.block_until_ready(gather(coefficients, coordinates)))
+        timing = time_it(lambda: jax.block_until_ready(shell(coefficients)))
 
     return {
         "gather_seconds": timing["best"],
         "gather_seconds_median": timing["median"],
-        "prefilter_seconds": prefilter_seconds,
+        "prefilter_seconds": prefilter,
     }
 
 
@@ -202,8 +182,8 @@ def run(
         box = rng.standard_normal((box_size,) * 3)
         radius = radius_fraction * box_size
         for nside in nsides:
-            coords = shell_coordinates(nside, radius, box_size, healpix_order)
-            npix = coords.shape[1]
+            latitude, longitude = shell_angles(nside, healpix_order)
+            npix = latitude.size
             for order in orders:
                 common = {
                     "box_size": box_size,
@@ -213,21 +193,21 @@ def run(
                     "radius": radius,
                     "healpix_order": healpix_order,
                 }
-                rows.append(
-                    {**common, "backend": "scipy", "dtype": "float64"}
-                    | _scipy_rows(box, coords, order)
-                )
-                if _gather.NUMBA:
+                for backend, use_scipy in (("scipy", True), ("numba", False)):
+                    if backend == "numba" and not _gather.NUMBA:
+                        continue
                     rows.append(
-                        {**common, "backend": "numba", "dtype": "float64"}
-                        | _numba_rows(box, coords, order)
+                        {**common, "backend": backend, "dtype": "float64"}
+                        | _numpy_rows(box, latitude, longitude, radius, order, use_scipy)
                     )
                 for name, device in devices:
                     for precision in ("float32", "float64"):
                         try:
                             rows.append(
                                 {**common, "backend": name, "dtype": precision}
-                                | _jax_rows(box, coords, order, device, precision)
+                                | _jax_rows(
+                                    box, latitude, longitude, radius, order, device, precision
+                                )
                             )
                         except Exception as exc:  # a backend that runs out of memory
                             rows.append(

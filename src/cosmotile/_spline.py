@@ -1,7 +1,7 @@
 """Cardinal B-spline mathematics, shared by every backend.
 
-Everything here is written in operations that :mod:`numpy` and :mod:`jax.numpy` spell
-identically, and is selected with the private ``xp`` argument. Nothing in this module
+Everything here is written in operations that are identical in :mod:`numpy` and
+:mod:`jax.numpy`, and is selected with the private ``xp`` argument. Nothing in this module
 imports ``jax``, ``scipy`` or ``astropy``: it is pure arithmetic on an array namespace.
 
 Three things live here, and they are the same three facts about the cardinal B-spline
@@ -22,8 +22,6 @@ seen from different sides:
     :mod:`cosmotile.jax`), and it is also the denominator of the interpolation window
     (see :func:`cosmotile.theory.interpolation_window`).
 """
-
-from __future__ import annotations
 
 from typing import Any
 

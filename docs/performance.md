@@ -6,49 +6,37 @@ gather $(p+1)^3$ cells out of the coeval box and add them up. A lightcone of 51 
 those. So it is worth knowing what that costs, and what changes it.
 
 The numbers come from `benchmarks/run_benchmarks.py`, whose output is committed at
-`benchmarks/results/latest.json`. Re-run it with `nox -s benchmarks`. The machine was a
-16-core CPU and an RTX A2000 Laptop GPU with **4 GB** — a small, power-limited card,
-which turns out to matter twice over.
+`benchmarks/results/latest.json`; re-run it with `nox -s benchmarks`. Every row times a
+public `cosmotile` entry point, not the library it calls underneath. They were measured
+on a 16-core CPU and an RTX A2000 Laptop GPU — a small, power-limited card, which affects
+the results considerably. **Measure on your own hardware before planning around any of
+this.**
 
 ## The one number
 
-A $256^3$ box tiled onto an `nside=256` shell at order 3, which is the setup you should
-probably be using:
+A $256^3$ box tiled onto an `nside=256` shell at order 3:
 
 | path | throughput | relative |
 | --- | --- | --- |
-| `scipy.ndimage.map_coordinates` (the fallback) | 3.5 Mpix/s | 1× |
-| **NumPy backend with `numba`** (the default) | **30 Mpix/s** | **8.7×** |
-| `cosmotile.jax`, CPU, float64 | 2.2 Mpix/s | 0.6× |
-| `cosmotile.jax`, CPU, float32 | 3.8 Mpix/s | 1.1× |
-| `cosmotile.jax`, GPU, float64 | 161 Mpix/s | 46× |
-| `cosmotile.jax`, GPU, float32 | 544 Mpix/s | **155×** |
+| `scipy.ndimage.map_coordinates` (the fallback) | 4.5 Mpix/s | 1× |
+| **NumPy backend with `numba`** (the default) | **47 Mpix/s** | 10× |
+| `cosmotile.jax`, CPU, float64 | 2.8 Mpix/s | 0.6× |
+| `cosmotile.jax`, CPU, float32 | 5.1 Mpix/s | 1.1× |
+| `cosmotile.jax`, GPU, float64 | 208 Mpix/s | 46× |
+| `cosmotile.jax`, GPU, float32 | 409 Mpix/s | 90× |
 
-Three things to read off that.
+Against the `numba` backend, the GPU gains a speedup of about **9×** here.
 
-`scipy` is the *fallback*, not the default. With `numba` installed — it is the `perf`
-extra, and has been for a long time — the NumPy backend gathers through its own parallel
-kernel instead, which is about nine times faster and agrees with `scipy` to roundoff.
-**That is free and needs no code change**; it is the row most users are actually on, and
-it is what the GPU has to beat.
-
-Against that, the GPU is about **18×**, not 155×. Still decisive, but worth stating
-honestly.
-
-And the JAX **CPU** backend is not a speedup at all — it is slower than `scipy`, let
-alone than the `numba` kernel. Its value on a CPU is that it is differentiable.
+The JAX **CPU** backend is not a speedup — it is roughly `scipy`'s speed and well behind
+`numba`. Its value on a CPU is that it is differentiable.
 
 ## Why the GPU wins
 
-Because the kernel is bound by memory *latency*, not by arithmetic.
+Because the kernel is bound by memory *latency*, not by arithmetic, and a GPU keeps tens
+of thousands of gathers in flight so the latency is never waited on.
 
-The evidence is that single precision buys nothing on a CPU. The `numba` gather runs at
-essentially identical speed in float64 and float32, even though float32 halves the bytes
-moved. The cores are not waiting for bandwidth or for the FPU; they are waiting for DRAM,
-one cache miss at a time.
-
-Locality confirms it from the other side. The same 196 608 pixels, the same box, order 3,
-varying only *where* the samples land:
+Locality shows the same thing from the other side. The same 196 608 pixels, the same box,
+order 3, varying only *where* the samples land:
 
 | coordinates | throughput |
 | --- | --- |
@@ -60,52 +48,61 @@ varying only *where* the samples land:
 **Nested ordering is about 1.7 times faster than ring ordering** on the same pixels,
 purely because neighbouring pixels in the nested scheme land nearer each other in the
 box. A larger shell is slower for the same reason: its samples are spread more thinly, so
-fewer share a cache line. This is free performance if your pipeline does not care about
-the ordering.
+fewer share a cache line.
 
 It is also why the benchmark tiles real HEALPix shells rather than random coordinates.
 Random coordinates understate throughput by up to eight times and would make every
-backend look artificially alike — and on a GPU the same mistake goes the other way, which
-is how a casual measurement of this kernel came out at 62 Mpix/s when the real figure was
-seven times higher.
+backend look artificially alike.
 
-A GPU fixes precisely this problem. It does not make any single gather faster; it keeps
-tens of thousands of them in flight so the latency never has to be waited on.
+### If you are not using HEALPix
 
-## How it scales with order
+The principle is that samples adjacent in your coordinate array should be near each other
+*in the box*. HEALPix nested ordering happens to do this well; latitude–longitude grids do
+it moderately well along rows and badly between them; an arbitrary list of directions does
+it not at all.
+
+If you build coordinates yourself and tiling is your bottleneck, sort them before tiling —
+by the Morton (Z-order) code of the integer cell each sample falls in, or failing that
+simply by one cartesian axis — and un-sort the result afterwards. The factor available is
+the one in the table above: several-fold, not a few percent.
+
+## How it scales with interpolation order
 
 $256^3$ box, `nside=256`, Mpix/s:
 
 | order | `scipy` | `numba` | GPU float32 | GPU float64 |
 | --- | --- | --- | --- | --- |
-| 0 | 23.5 | 104 | 2943 | 1557 |
-| 1 | 11.4 | 68 | 1589 | 762 |
-| 3 | 3.5 | 30 | 544 | 161 |
-| 5 | 1.3 | 13 | 85 | 52 |
+| 0 | 29.5 | 178 | 6989 | 5223 |
+| 1 | 15.2 | 122 | 1957 | 1003 |
+| 3 | 4.5 | 47 | 409 | 208 |
+| 5 | 1.6 | 14 | 19 | 47 |
 
 ```{figure} figures/throughput_by_order.svg
 :alt: Throughput against interpolation order for each backend, log scale
 
-Throughput for a $256^3$ box on an `nside=256` shell. Every backend falls off with
-order at roughly the rate the work grows — order 5 gathers 216 cells per sample against
-order 1's 8 — and the ordering between them is stable across orders. Hollow bars, where
-they appear, are measurements the harness flagged as unreliable.
+Every backend falls off with order at roughly the rate the work grows — order 5 gathers
+216 cells per sample against order 1's 8. Orders 0 and 1 are so cheap per sample that
+these measure dispatch overhead as much as the kernel; unfilled bars are measurements the
+harness flagged as unreliable.
 ```
 
-Against `scipy` the GPU advantage looks like it grows with order. Against the path you
-are actually on it does the opposite:
+Against `scipy` the GPU advantage grows with order. However, against the default `numba`
+implementation it diminishes with order:
 
 ```{figure} figures/gpu_speedup.svg
-:alt: GPU speedup over the numba path, falling from about 28x at order 0 to 7x at order 5
+:alt: GPU speedup over the numba path, falling from about 40x at order 0 to parity at order 5
 
-The GPU in single precision, relative to the default `numba` path. The advantage *falls*
-with order — about 28× at order 0, 18× at order 3 and under 7× at order 5 — and barely
-depends on the box size. `numba` scales with order about as well as the GPU does, so the
-high orders are where the CPU path closes the gap, not where it loses it.
+The GPU in single precision, relative to the default `numba` path. The advantage falls
+from roughly 40× at order 0 to about 9× at order 3, and by order 5 it is gone. `numba`
+scales with order about as well as the GPU does.
 ```
 
-That is worth knowing before you reach for a GPU: if you tile at order 5, the honest
-figure is closer to 7× than to 100×.
+So if you tile at order 5, a GPU may buy you nothing at all.
+
+Note the order-5 float32 row: on this card single precision is about **2.5 times slower**
+than double there, reproducibly. That is the opposite of every other row and is a
+property of how the compiler handles the 216-tap kernel, not something to rely on either
+way — another reason to measure your own hardware.
 
 ## The pre-filter
 
@@ -118,36 +115,30 @@ Time to pre-filter a whole box at order 3:
 
 | box | `scipy` | GPU float32 | GPU float64 |
 | --- | --- | --- | --- |
-| $256^3$ | 1.20 s | 0.008 s | 0.074 s |
-| $384^3$ | 4.02 s | 0.029 s | out of memory |
+| $256^3$ | 0.80 s | 0.008 s | 0.074 s |
+| $384^3$ | 2.60 s | 0.029 s | — |
 
 A one-off per box either way, and hoisted out of the shell loop by
-{func}`~cosmotile.prefilter_coeval` on both backends — but it is worth having when you
-are fitting and the box changes every iteration.
+{func}`~cosmotile.prefilter_coeval` on both backends — but it is worth having when you are
+fitting and the box changes every iteration. On a CPU the FFT route is about three times
+*slower* than `scipy`'s recursive filter; it is a GPU win specifically.
 
-Note this reverses on a CPU: the FFT route is about three times *slower* than `scipy`'s
-recursive filter there. It is a GPU win specifically.
-
-## Memory, and why 4 GB is the real constraint
+## Memory
 
 The box, its coefficients and — under reverse-mode autodiff — its cotangent all have to
-sit on the device together. In float32 that is $4N^3$ bytes apiece:
+sit on the device together, and the FFT pre-filter needs a transient workspace on top.
+A rough estimate for the whole forward-and-backward pass is
 
-| box | float32 | float64 |
-| --- | --- | --- |
-| $256^3$ | 67 MB | 134 MB |
-| $384^3$ | 226 MB | 453 MB |
-| $512^3$ | 537 MB | 1.07 GB |
+$$
+\text{bytes} \approx 20 N^3 \quad \text{(float32)},
+$$
 
-On this 4 GB card, $384^3$ at order 3 runs in float32 and **runs out of memory in
-float64**; at order 5 it does not fit in either. Single precision is not merely faster
-here — it is what makes the larger box possible at all. The FFT pre-filter is the peak:
-roughly 460 MB of workspace for $384^3$ in float32, 920 MB in float64.
+so about 340 MB for $256^3$, 1.3 GB for $512^3$ and 10 GB for $1024^3$; double that in
+`float64`. Single precision is not only faster, it is often what makes the larger box fit.
 
 The output is its own problem. A thousand-shell lightcone at `nside=256` is 3.1 GB, and
-building all of its coordinates at once with `jax.vmap` would want a further 19 GB.
-Neither fits. That is what {func}`~cosmotile.jax.lightcone_scan` is for: it folds over the
-shells one at a time, rebuilding each shell's coordinates from shared unit vectors, so the
+building all of its coordinates at once with `jax.vmap` would want a further 19 GB. That
+is what {func}`~cosmotile.jax.lightcone_scan` is for: it makes one shell at a time, so the
 peak is one shell rather than all of them. See
 [Differentiable and GPU tiling](jax-backend).
 
@@ -156,42 +147,32 @@ peak is one shell rather than all of them. See
 The full-lightcone example from [Usage](usage) — 51 shells, `nside=128`,
 `subsample_level=1`, `n_radial_samples=4`, order 3 — is about 160 million interpolations:
 
-| | gather time |
+| | time |
 | --- | --- |
-| `scipy` fallback | ~46 s |
-| NumPy backend with `numba` | ~5 s |
+| `scipy` fallback | ~36 s |
+| NumPy backend with `numba` | ~3 s |
 | `cosmotile.jax` on a GPU, float32 | well under a second |
 
-Which is the difference between a thing you wait for and a thing you put inside a fitting
-loop. At that point the pre-filter and the host-to-device transfer, not the gather,
-are what you are paying for.
+At that point the pre-filter and the host-to-device transfer, not the gather, are what
+you are paying for.
 
-## A caveat about these numbers
+## A note on measurement
 
-The GPU here is a power-limited laptop part. It idles at a tenth of its maximum clock,
-ramps under sustained load and is then pulled back by its power cap — it had accumulated
-half a minute of power capping by the time these were taken. Measured carelessly, the
-same kernel differed by a factor of seven between runs minutes apart.
+These numbers came from a power-limited laptop GPU, which idles at a fraction of its
+clock and ramps under load. Measured carelessly the same kernel differed by a factor of
+seven between runs, so the harness warms up to a steady state, reports the median
+alongside the best of nine runs, and flags rows where the two disagree. Treat a flagged
+row as an upper bound.
 
-The harness therefore warms up until at least half a second of wall clock has passed
-rather than for a fixed number of calls, and records the median alongside the best of
-nine runs, flagging any row where the two disagree by more than half. Treat a flagged row
-as an upper bound rather than a measurement, and treat all of these as the shape of the
-effect rather than a specification of your hardware.
+## When not to use the `jax` backend
 
-## When not to bother
-
-- **Order 0 or 1 on small shells.** The kernel is too cheap to amortise the launch, and
-  the `numba` path is already doing 70–100 Mpix/s.
-- **Order 5, unless the box is large.** The GPU is under 7× the `numba` path there, which
-  may not repay moving the box across.
-- **CPU only.** The JAX CPU backend is slower than both `scipy` and `numba` at the orders
-  you would actually use. Its value there is that it is differentiable, not that it is
-  quick.
+- **Order 5.** The GPU is at parity with the `numba` path there.
+- **CPU only.** The JAX CPU backend is slower than `numba` at the orders you would
+  actually use. Its value there is that it is differentiable, not that it is quick.
 - **One shell, once.** Compilation is not free, and neither is moving a box to a device.
   The win is in loops.
-- **A box that does not fit.** Above roughly $384^3$ on a 4 GB card you will be chunking
-  or dropping to float32, and at some point the transfers cost more than the gather saves.
+- **A box that does not fit.** Once you are chunking or spilling to host memory, the
+  transfers can cost more than the gather saves.
 
 ## Reproducing these numbers
 
@@ -200,5 +181,5 @@ python benchmarks/run_benchmarks.py --out benchmarks/results/latest.json
 python benchmarks/make_performance_figures.py
 ```
 
-The first needs the `all` extra; the second needs `matplotlib`. Both write committed
-files, so the documentation builds without either — and without a GPU.
+Both need the `all` extra. They write committed files, so the documentation builds
+without a GPU, `jax` or `matplotlib`.

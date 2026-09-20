@@ -295,9 +295,7 @@ def _interpolate_coeval(
     many shells it can be computed once with :func:`prefilter_coeval` instead of once per
     shell. Such a box arrives here as a :class:`~cosmotile.PrefilteredCoeval`, which
     carries the order it was filtered for, and that -- which only
-    :func:`prefilter_coeval` can produce -- is what suppresses the filter here. No flag is
-    taken on trust and nothing is cached between calls, so this cannot silently filter
-    twice, nor silently reuse a stale filter for a box that has since been mutated. A box
+    :func:`prefilter_coeval` can produce -- is what suppresses the filter here. A box
     filtered for a different order than it is being tiled at is an error.
     """
     if isinstance(coeval, PrefilteredCoeval):
@@ -895,7 +893,7 @@ def apply_rsds(
     distance: np.ndarray,
     n_subcells: int = 4,
     *,
-    outside: Literal["empty", "edge"] = "empty",
+    outside: Literal["empty", "edge"] = "edge",
 ) -> np.ndarray:
     """Apply redshift-space distortions to a field.
 
@@ -951,28 +949,18 @@ def apply_rsds(
         Larger values resolve the displacement field more finely and give a more
         accurate answer, at proportionally greater cost.
     outside
-        What the field does beyond the range ``distance`` covers. This is a genuine
-        choice, not an implementation detail: your data say nothing about what lies
-        outside them, and displacement moves material across that boundary in both
-        directions, so the answer near the ends depends on the assumption you make.
+        What the field does beyond the range ``distance`` covers. Your data say nothing
+        about that, and displacement moves material across the boundary in both
+        directions, so the answer near the ends depends on which you choose.
 
-        ``"empty"`` (the default) takes the field to be zero outside. Material displaced
-        off either end is gone, nothing flows in, and the total can only decrease.
+        ``"edge"`` (the default) continues the field at its first and last slice values,
+        moving with the boundary displacement. Material flows in as well as out, so on
+        average nothing is lost. This is usually what you want: a set of slices is
+        normally a window cut out of a larger field.
 
-        ``"edge"`` continues the field at its first and last slice values, moving with
-        the boundary displacement. Material flows in from outside as well as out, so the
-        total may rise or fall. This is the assumption to make when your slices are a
-        window cut out of a larger field -- a chunk of a longer lightcone, say -- rather
-        than the whole of it.
-
-        Either way the result is independent of how much padding is allocated, provided
-        there is enough of it; with ``"edge"`` the displacement outside the grid is held
-        at its boundary value rather than extrapolated, since a linearly extrapolated
-        velocity grows without bound and would make the answer depend on the padding.
-
-        Versions before 2.0 always behaved roughly like ``"edge"``, but extrapolated the
-        displacement, so the amount of padding -- itself set by the data -- changed the
-        answer, and the total could exceed what went in.
+        ``"empty"`` takes the field to be zero outside, so material displaced off either
+        end is gone and the total can only fall. Choose it when your slices really are
+        the whole field.
 
     Returns
     -------

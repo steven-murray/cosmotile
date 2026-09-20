@@ -1,24 +1,26 @@
 """The separable B-spline gather, orders 0-5."""
 
+# Needed despite Python 3.11: the documentation build mocks `jax` (see docs/conf.py),
+# so `jax.Array` is a Mock there and an eagerly-evaluated `Array | ...` would fail.
 from __future__ import annotations
 
 import functools
-from typing import Any
 
 import jax
 import jax.numpy as jnp
+from jax import Array
 
 from .._geometry import shell_coordinates, wrap_index
 from .._plan import PrefilteredCoeval, ShellSampling
 from .._spline import base_index, spline_weights
 
 
-def _average_subsamples(values: Any, weights: Any, npix: int) -> Any:
+def _average_subsamples(values: Array, weights: Array, npix: int) -> Array:
     """Collapse sub-sample-major values onto one value per output pixel."""
     return (weights[:, None] * values.reshape(-1, npix)).sum(axis=0)
 
 
-def _wrap(index: Any, size: int, order: int) -> Any:
+def _wrap(index: Array, size: int, order: int) -> Array:
     """Wrap a stencil index into ``[0, size)``, given a ``base`` already inside the grid.
 
     ``size`` and ``order`` are both known when the function is traced, so the choice
@@ -38,7 +40,7 @@ def _wrap(index: Any, size: int, order: int) -> Any:
 
 
 @functools.partial(jax.jit, static_argnames=("order",))
-def _gather(coefficients: Any, base: Any, weights: Any, order: int) -> Any:
+def _gather(coefficients: Array, base: Array, weights: Array, order: int) -> Array:
     """Evaluate the spline at every sample, given a pre-wrapped stencil.
 
     Unrolls the outer two stencil axes and vectorises the innermost. Unrolling all three
@@ -81,7 +83,7 @@ def _gather(coefficients: Any, base: Any, weights: Any, order: int) -> Any:
     return total
 
 
-def _coefficients(coeval: Any, order: int) -> Any:
+def _coefficients(coeval: Array | PrefilteredCoeval, order: int) -> Array:
     """Unwrap a pre-filtered box, checking it was filtered for this order."""
     if isinstance(coeval, PrefilteredCoeval):
         if coeval.order != order:
@@ -101,13 +103,13 @@ def _coefficients(coeval: Any, order: int) -> Any:
 
 
 def shell_from_coordinates(
-    coeval: Any,
-    coordinates: Any,
+    coeval: Array | PrefilteredCoeval,
+    coordinates: Array,
     *,
     order: int,
-    weights: Any = None,
+    weights: Array | None = None,
     npix: int | None = None,
-) -> Any:
+) -> Array:
     """Interpolate a box at arbitrary pixel coordinates.
 
     The primitive the rest of the backend is built on. Pure, so it may be wrapped in
@@ -149,13 +151,13 @@ def shell_from_coordinates(
 
 
 def shell(
-    coeval: Any,
+    coeval: Array | PrefilteredCoeval,
     sampling: ShellSampling,
-    radius: Any,
+    radius: Array | float,
     *,
-    rotation: Any = None,
-    origin: Any = None,
-) -> Any:
+    rotation: Array | None = None,
+    origin: Array | None = None,
+) -> Array:
     """Interpolate a box onto one spherical shell.
 
     Pure and differentiable in ``coeval``, ``radius`` and ``origin``. The coordinates

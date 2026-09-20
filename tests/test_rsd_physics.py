@@ -392,9 +392,9 @@ def test_refinement_conserves_mass() -> None:
     refinement.
 
     The displacement is chosen to point *inwards* at both ends (away from the observer
-    at the near end, towards it at the far end), so no parcel leaves and, equally
-    importantly, the grid needs no extrapolated padding -- which would bring mass in
-    from outside and is a separate, documented behaviour.
+    at the near end, towards it at the far end), so no parcel leaves; and ``outside`` is
+    set to ``"empty"`` so none arrives either. What is left is the refinement alone,
+    which is what this is about.
     """
     nslice = 128
     distance = make_los_grid(nslice, 500.0)
@@ -411,6 +411,7 @@ def test_refinement_conserves_mass() -> None:
             los_displacement=displacement,
             distance=distance,
             n_subcells=n_subcells,
+            outside="empty",
         )
         assert abs(out.sum() / field.sum() - 1) < 1e-12, f"n_subcells={n_subcells}"
 

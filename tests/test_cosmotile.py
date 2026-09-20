@@ -292,7 +292,8 @@ def test_apply_rsds_edges() -> None:
     Positive displacement is *towards the observer*, so on a grid with slices at
     distances 10 and 11 a positive displacement at the near slice pushes material off
     the near end and a negative one at the far slice pushes it off the far end. There is
-    no periodicity along the line of sight, so that material is simply gone.
+    no periodicity along the line of sight, so with ``outside="empty"`` that material is
+    simply gone -- which is the behaviour being pinned here, hence the explicit keyword.
 
     See ``test_rsd_physics.py`` for the tests that check the displacement is physically
     *right*; this one only pins the edge behaviour.
@@ -302,7 +303,11 @@ def test_apply_rsds_edges() -> None:
 
     def apply(los: np.ndarray, n_subcells: int = 1) -> np.ndarray:
         return cmt.apply_rsds(
-            field=field, los_displacement=los, distance=distance, n_subcells=n_subcells
+            field=field,
+            los_displacement=los,
+            distance=distance,
+            n_subcells=n_subcells,
+            outside="empty",
         )
 
     # The near slice moves towards the observer and the far slice away from it. That is

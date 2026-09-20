@@ -566,19 +566,24 @@ def test_cloud_in_cell_matches_the_numpy_kernel(shift: float) -> None:
     )
 
 
-def test_mass_can_only_ever_leave_the_grid() -> None:
-    """Displacement moves material; it never creates any.
+def test_mass_can_only_ever_leave_an_empty_outside() -> None:
+    """With nothing beyond the grid, displacement can only remove material.
 
-    Before version 2.0 the padding held replicated edge values rather than being empty,
-    so that fiction could flow back in and the total could *grow*. It cannot now, for
-    either backend, and the total is independent of how much padding was allocated.
+    Before version 2.0 there was no choice in the matter: the padding always held edge
+    values with the displacement extrapolated across it without bound, so the total
+    could *grow* no matter how the field was set up.
     """
     from cosmotile._rsd import make_rsd_plan
 
     distance, field, displacement = _rsd_case(regular=True)
     field = np.abs(field)  # a non-negative field, so "more mass" is unambiguous
 
-    plan = make_rsd_plan(distance, n_subcells=4, max_displacement=float(np.abs(displacement).max()))
+    plan = make_rsd_plan(
+        distance,
+        n_subcells=4,
+        max_displacement=float(np.abs(displacement).max()),
+        outside="empty",
+    )
     got = np.asarray(cjax.apply_rsds(jnp.asarray(field), jnp.asarray(displacement), plan))
 
     assert got.sum() <= field.sum() + 1e-9

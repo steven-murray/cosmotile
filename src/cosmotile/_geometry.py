@@ -19,8 +19,6 @@ selected by the private ``xp`` argument, so one implementation serves both backe
 array in.
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 import numpy as np
@@ -68,8 +66,7 @@ def unit_vectors(latitude: np.ndarray, longitude: np.ndarray) -> np.ndarray:
     """Cartesian unit vectors for a set of angular coordinates.
 
     These do not depend on the shell radius, so they are computed once for a geometry
-    and scaled per shell. That is what makes a thousand-shell lightcone tractable: the
-    unit vectors are shared, and each shell carries only its radius.
+    and scaled per shell.
 
     Parameters
     ----------

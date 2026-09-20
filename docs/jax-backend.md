@@ -7,26 +7,24 @@ but as pure JAX functions. Install it with
 $ pip install cosmotile[jax]
 ```
 
-It exists for two reasons, and the first is the one that cannot be had any other way.
+It exists for two reasons:
 
-**Gradients.** Tiling is *linear in the box values*: every output pixel is a fixed
-weighted sum of a few dozen cells. So the derivative of a shell with respect to the
-coeval box is exactly the transpose of that sum — a scatter-add — and it is cheap,
-exact and well conditioned. That lets `cosmotile` sit inside a differentiable forward
-model, so a lightcone observation can be fitted back to whatever produced the box.
+**Gradients.** Tiling is *linear in the box values*, so its derivatives are automatic,
+cheap, exact and well conditioned. This lets `cosmotile` be part of a differentiable
+forward model, so a lightcone observation can be fitted back to whatever produced the
+box.
 
-**Speed.** The gather is limited by memory *latency*, not arithmetic — which is precisely
-the workload a GPU hides best. Measured on a $384^3$ box at `nside=256`, order 3:
+**Speed.** The gather step is well suited to GPU acceleration. Measured on a $256^3$ box
+at `nside=256`, order 3:
 
 | backend | throughput |
 | --- | --- |
-| NumPy path, `scipy` fallback | 3.5 Mpix/s |
-| NumPy path with `numba` (the default) | 30 Mpix/s |
-| `cosmotile.jax`, GPU, float64 | 161 Mpix/s |
-| `cosmotile.jax`, GPU, float32 | 544 Mpix/s |
+| NumPy path, `scipy` fallback | 4.5 Mpix/s |
+| NumPy path with `numba` (the default) | 47 Mpix/s |
+| `cosmotile.jax`, GPU, float64 | 208 Mpix/s |
+| `cosmotile.jax`, GPU, float32 | 409 Mpix/s |
 
-Note what it has to beat: the NumPy path is not `scipy` unless `numba` is missing. See
-[Performance](performance) for the full picture, including when this is *not* worth it.
+See [Performance](performance) for the full picture, including when this is *not* worth it.
 
 ## It is not a mirror of the NumPy API
 
@@ -52,20 +50,36 @@ shell = cjax.shell(coeff, sampling, radius=150.0)
 radius — in particular the unit vectors, which are the expensive part. One of these
 serves a whole lightcone, and each shell then costs one scalar.
 
-Nothing in the backend is decorated with `jax.jit`. Wrap the call site yourself;
-pre-jitting a library primitive would compile it a second time when you jit the caller.
+These are ordinary functions, so `jax.jit` them at whatever granularity suits you — the
+whole forward model is usually the right level:
+
+```python
+import jax
+from functools import partial
+
+
+@partial(jax.jit, static_argnames="sampling")
+def one_shell(coeff, radius):
+    return cjax.shell(coeff, sampling, radius)
+```
+
+`sampling` is static because it carries the interpolation order, which fixes the shape of
+the computation. The internal kernels are already jitted; nesting `jit` costs nothing, as
+JAX inlines the inner one.
 
 Unlike {func}`~cosmotile.prefilter_coeval`, the JAX `prefilter_coeval` is **not**
 optional above order 1. The NumPy path will filter a raw box for you; this one refuses,
 because doing it inside a jitted shell would redo it for every shell of the lightcone.
 
-## A whole lightcone: scan, never vmap
+## Performance tips for creating a whole lightcone
 
-A thousand shells at `nside=256` is 3.1 GB of output, and building all their coordinates
-at once with `jax.vmap` would need a further 19 GB. Neither fits on a GPU. Use
-{func}`~cosmotile.jax.lightcone_scan`, which folds a function over the shells with
-`lax.scan` so that only one is ever live, rebuilding its coordinates from the shared unit
-vectors:
+A thousand shells at `nside=256` is 3.1 GB, and building all their coordinates at once
+with `jax.vmap` would need a further 19 GB. Neither fits on a typical GPU.
+
+If you only want a *summary* of the lightcone — a likelihood, an angular power spectrum,
+a sum over shells — you never need it all at once.
+{func}`~cosmotile.jax.lightcone_scan` makes one shell at a time and hands it to a function
+that combines it with a running result:
 
 ```python
 import jax.numpy as jnp
@@ -76,17 +90,17 @@ total_power = cjax.lightcone_scan(
     coeff,
     sampling,
     radii,
-    lambda carry, shell: carry + jnp.mean(shell**2),
+    lambda running_total, shell: running_total + jnp.mean(shell**2),
     init=0.0,
 )
 ```
 
-Folding the shells into the statistic you want is the point. If you make the shells
-*outputs* of the scan instead, reverse mode needs every shell's cotangent live and the
-3.1 GB is back.
+This matters most when you are differentiating: the backward pass would otherwise have to
+keep every shell in memory at once. If you want the shells themselves and they fit, just
+call {func}`~cosmotile.jax.shell` in a loop.
 
-`vmap` is still the right tool across *fields* — many boxes on one geometry — since those
-share their coordinates.
+`vmap` is the right tool across *fields* — many boxes on one geometry — since those share
+their coordinates.
 
 ## What you can differentiate
 
@@ -98,23 +112,34 @@ gradient = jax.grad(
 )(box)
 ```
 
-**With respect to the box**, at every order, exactly. The reverse pass is the transpose
-of the interpolation, not an approximation to it — the test suite asserts
-$\langle Ac, y\rangle = \langle c, A^{\mathsf{T}} y\rangle$ to machine precision. This is
-the gradient field-level inference wants.
+**The box, and anything upstream of it.** This is the case that matters, and it works at
+every order, exactly. Tiling is linear in the box values, so the reverse pass is the exact
+transpose of the interpolation rather than an approximation to it — the test suite asserts
+$\langle Ac, y\rangle = \langle c, A^{\mathsf{T}} y\rangle$ to machine precision.
 
-**With respect to the geometry** — radius, origin, rotation — **use order 3 or above.**
-Order 0 is piecewise constant, so its gradient is identically zero: `jax.grad` will
-cheerfully hand you a field of zeros. Order 1 is piecewise linear, so its derivative
-exists almost everywhere but jumps at every cell boundary. Only from order 3 is the
-reconstruction smooth enough for the derivative to mean what you want it to.
+Because it is exact and unconditional, gradients with respect to whatever *produced* the
+box — cosmological parameters, an emulator's weights, an astrophysical model — flow
+straight through by the chain rule, at any interpolation order:
 
-One caveat specific to geometry gradients: see the note on precision below.
+```python
+def loss(params):
+    box = my_simulator(params)  # differentiable, in JAX
+    coeff = cjax.prefilter_coeval(box, order=1)
+    return jnp.sum((cjax.shell(coeff, sampling, 150.0) - observed) ** 2)
 
-The `remat` flag on `lightcone_scan` re-materialises each step instead of saving its
-residuals. It is rarely worth it for the interpolation itself, whose residuals are nearly
-free because the map is linear with constant indices — reach for it when your own `body`
-is the expensive part.
+
+gradient = jax.grad(loss)(params)
+```
+
+Note the pre-filter has to be inside the traced function for this. If you pre-filter on
+the host and pass the coefficients in, your gradient is with respect to the coefficients.
+
+**The shell geometry itself** — differentiating with respect to `radius`, `origin` or
+`rotation`, i.e. asking how the output changes if you move the shell through the box — is
+a separate and much rarer thing, and it needs **order 3 or above**. Order 0 is piecewise
+constant, so this derivative is identically zero and `jax.grad` will hand you zeros
+without complaint; order 1 is piecewise linear, so it jumps at every cell boundary. None
+of that affects the parameter gradients above.
 
 ## Precision
 
@@ -134,27 +159,19 @@ gather and $3 \times 10^{-6}$ for the pre-filter — the pre-filter being the lo
 two because it is a *global* deconvolution, so its error does not stay local the way the
 gather's does.
 
-The gather stays that accurate in `float32` only because of a deliberate choice: a
-coordinate is never carried as a single float. It is split on the host into an integer
-cell index and a fraction in $[0, 1)$, so the quantity that has to survive `float32` is
-always of order one. Carrying a shell radius of a thousand cells directly would already
-be uncertain by $10^{-4}$ cells, which would swamp everything you paid for by using a
-high order.
-
-That split is also the caveat on geometry gradients: differentiating with respect to a
-radius means the split has to happen *inside* the trace, where `float32` reintroduces
-exactly that error. Differentiate geometry under `jax.enable_x64()`, or at radii below a
-few thousand cells.
+One exception: if you differentiate with respect to the shell *geometry* (see above), do
+it under `jax.enable_x64()` or at radii below a few thousand cells. Everything else is
+fine in single precision.
 
 ## Memory
 
 The box, its coefficients and — under reverse mode — its cotangent all have to fit on the
-device at once. In `float32` that is three copies of $4N^3$ bytes; on a 4 GB card, $384^3$
-fits comfortably and $448^3$ does not. Single precision is not only faster here, it is
-what makes the larger box fit at all.
+device at once, which is three copies of $4N^3$ bytes in `float32` (twice that in
+`float64`). Budget about another $2 N^3$ complex values for the FFT pre-filter, which is
+the transient peak.
 
-The FFT pre-filter is the peak: about 460 MB of workspace for a $384^3$ box in `float32`,
-920 MB in `float64`. It runs once per box, so if you are tight on memory, pre-filter on
-the host with {func}`~cosmotile.prefilter_coeval` and move the coefficients across — at
-the cost of your gradient then being with respect to the coefficients rather than the raw
-box.
+So a rough estimate for the whole forward-and-backward pass is $20 N^3$ bytes in
+`float32`: around 1.3 GB for $512^3$, 10 GB for $1024^3$. If that does not fit,
+pre-filter on the host with {func}`~cosmotile.prefilter_coeval` and move the coefficients
+across — at the cost of your gradient then being with respect to the coefficients rather
+than the raw box.

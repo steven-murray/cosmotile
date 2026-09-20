@@ -1,19 +1,18 @@
 """The periodic spline pre-filter, as an FFT-domain deconvolution."""
 
-from __future__ import annotations
-
 import functools
-from typing import Any
 
 import jax
 import jax.numpy as jnp
+from jax import Array
+from jax.typing import ArrayLike
 
 from .._plan import PrefilteredCoeval
 from .._spline import MAX_ORDER, bspline_dtft
 
 
 @functools.partial(jax.jit, static_argnames=("order",))
-def _deconvolve(coeval: Any, order: int) -> Any:
+def _deconvolve(coeval: Array, order: int) -> Array:
     """Divide the spectrum by ``b_p`` along every axis."""
     transformed = jnp.fft.rfftn(coeval)
     for axis, size in enumerate(coeval.shape):
@@ -26,7 +25,7 @@ def _deconvolve(coeval: Any, order: int) -> Any:
     return jnp.fft.irfftn(transformed, s=coeval.shape, axes=tuple(range(coeval.ndim)))
 
 
-def prefilter_coeval(coeval: Any, order: int) -> PrefilteredCoeval:
+def prefilter_coeval(coeval: ArrayLike, order: int) -> PrefilteredCoeval:
     r"""Convert a coeval box to B-spline coefficients, once, for re-use across shells.
 
     Interpolating at ``order >= 2`` requires the box to be converted to B-spline
