@@ -418,3 +418,36 @@ def test_transform_to_pixel_coords_input_validation() -> None:
             latitude=latitude.reshape(1, 7),
             longitude=longitude.reshape(1, 7),
         )
+
+
+def test_interpolator_still_exposes_the_partial_interface() -> None:
+    """``SliceInterpolator`` replaced a ``functools.partial`` in 2.0.
+
+    The old object carried its parameters in ``.keywords`` and had ``origin`` stapled
+    on as an attribute, and downstream code reads both. The class keeps them, so that
+    the change of type is not a change of contract.
+    """
+    origin = (3.0, 6.0, -1.0)
+    interpolator = cmt.make_lightcone_slice_interpolator(
+        latitude=np.zeros(4),
+        longitude=np.linspace(0, 2 * np.pi, 4, endpoint=False),
+        distance_to_shell=10.0,
+        interpolation_order=3,
+        origin=origin,
+    )
+
+    assert set(interpolator.keywords) == {"coordinates", "order", "weights"}
+    assert interpolator.keywords["order"] == 3
+    assert interpolator.keywords["weights"] is None
+    np.testing.assert_array_equal(interpolator.keywords["coordinates"], interpolator.coordinates)
+    np.testing.assert_array_equal(interpolator.origin, origin)
+
+
+def test_prefiltered_coeval_reports_its_array_properties() -> None:
+    """It is not an array, but it answers the questions an array would about itself."""
+    filtered = cmt.prefilter_coeval(np.zeros((4, 5, 6), dtype=np.float32), 3)
+    assert filtered.shape == (4, 5, 6)
+    assert filtered.ndim == 3
+    # order > 1 filters to float64, which is what scipy's spline_filter is asked for.
+    assert filtered.dtype == np.float64
+    assert cmt.prefilter_coeval(np.zeros((4, 5, 6), dtype=np.float32), 1).dtype == np.float32
