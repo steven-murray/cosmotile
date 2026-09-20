@@ -949,9 +949,7 @@ def apply_rsds(
         Larger values resolve the displacement field more finely and give a more
         accurate answer, at proportionally greater cost.
     outside
-        What the field does beyond the range ``distance`` covers. Your data say nothing
-        about that, and displacement moves material across the boundary in both
-        directions, so the answer near the ends depends on which you choose.
+        What the field does beyond the range ``distance`` covers.
 
         ``"edge"`` (the default) continues the field at its first and last slice values,
         moving with the boundary displacement. Material flows in as well as out, so on

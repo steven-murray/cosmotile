@@ -4,11 +4,6 @@ Run manually and commit the result::
 
     python benchmarks/run_benchmarks.py --out benchmarks/results/latest.json
 
-Every row times a public ``cosmotile`` entry point -- the interpolator returned by
-:func:`cosmotile.make_lightcone_slice_interpolator`, or :func:`cosmotile.jax.shell` --
-rather than the library it happens to call underneath, so the numbers stay true if the
-implementation changes.
-
 The shells are real HEALPix shells, not random coordinates. Tiling is bound by memory
 latency, so what it costs depends on where the samples land and not just how many there
 are; random coordinates understate throughput several-fold and make every backend look
