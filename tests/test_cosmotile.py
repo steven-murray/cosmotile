@@ -256,9 +256,14 @@ def test_lightcone_slice_vector_field() -> None:
         )
     )
 
-    assert los[0] == -1 * un.pixel
-    assert los[10] == 1 * un.pixel
-    assert los[20] == -1 * un.pixel
+    # A uniform unit field along x, read along the line of sight: -1 looking down +x,
+    # +1 looking back along it, and nothing at the poles. Compared approximately rather
+    # than exactly because the value comes out of an interpolation and a normalisation,
+    # so which summation order lands exactly on 1.0 is an accident of the backend --
+    # numba's parallel gather and scipy's loop differ here in the last bit.
+    assert np.isclose(los[0], -1 * un.pixel)
+    assert np.isclose(los[10], 1 * un.pixel)
+    assert np.isclose(los[20], -1 * un.pixel)
     assert np.isclose(los[21], 0 * un.pixel)
     assert np.isclose(los[22], 0 * un.pixel)
 
@@ -287,7 +292,8 @@ def test_apply_rsds_edges() -> None:
     Positive displacement is *towards the observer*, so on a grid with slices at
     distances 10 and 11 a positive displacement at the near slice pushes material off
     the near end and a negative one at the far slice pushes it off the far end. There is
-    no periodicity along the line of sight, so that material is simply gone.
+    no periodicity along the line of sight, so with ``outside="empty"`` that material is
+    simply gone -- which is the behaviour being pinned here, hence the explicit keyword.
 
     See ``test_rsd_physics.py`` for the tests that check the displacement is physically
     *right*; this one only pins the edge behaviour.
@@ -297,7 +303,11 @@ def test_apply_rsds_edges() -> None:
 
     def apply(los: np.ndarray, n_subcells: int = 1) -> np.ndarray:
         return cmt.apply_rsds(
-            field=field, los_displacement=los, distance=distance, n_subcells=n_subcells
+            field=field,
+            los_displacement=los,
+            distance=distance,
+            n_subcells=n_subcells,
+            outside="empty",
         )
 
     # The near slice moves towards the observer and the far slice away from it. That is
@@ -418,3 +428,36 @@ def test_transform_to_pixel_coords_input_validation() -> None:
             latitude=latitude.reshape(1, 7),
             longitude=longitude.reshape(1, 7),
         )
+
+
+def test_interpolator_still_exposes_the_partial_interface() -> None:
+    """``SliceInterpolator`` replaced a ``functools.partial`` in 2.0.
+
+    The old object carried its parameters in ``.keywords`` and had ``origin`` stapled
+    on as an attribute, and downstream code reads both. The class keeps them, so that
+    the change of type is not a change of contract.
+    """
+    origin = (3.0, 6.0, -1.0)
+    interpolator = cmt.make_lightcone_slice_interpolator(
+        latitude=np.zeros(4),
+        longitude=np.linspace(0, 2 * np.pi, 4, endpoint=False),
+        distance_to_shell=10.0,
+        interpolation_order=3,
+        origin=origin,
+    )
+
+    assert set(interpolator.keywords) == {"coordinates", "order", "weights"}
+    assert interpolator.keywords["order"] == 3
+    assert interpolator.keywords["weights"] is None
+    np.testing.assert_array_equal(interpolator.keywords["coordinates"], interpolator.coordinates)
+    np.testing.assert_array_equal(interpolator.origin, origin)
+
+
+def test_prefiltered_coeval_reports_its_array_properties() -> None:
+    """It is not an array, but it answers the questions an array would about itself."""
+    filtered = cmt.prefilter_coeval(np.zeros((4, 5, 6), dtype=np.float32), 3)
+    assert filtered.shape == (4, 5, 6)
+    assert filtered.ndim == 3
+    # order > 1 filters to float64, which is what scipy's spline_filter is asked for.
+    assert filtered.dtype == np.float64
+    assert cmt.prefilter_coeval(np.zeros((4, 5, 6), dtype=np.float32), 1).dtype == np.float32

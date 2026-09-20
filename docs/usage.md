@@ -183,6 +183,19 @@ smaller comoving distance. That is the same sign convention
 {func}`~cosmotile.make_lightcone_slice_vector_field` returns, so the two chain directly
 as above.
 
+## Gradients, or a GPU
+
+Everything above runs on NumPy. If you need to differentiate through the tiling — to put
+`cosmotile` inside a fitting loop — or you want it to run on a GPU, there is an optional
+JAX backend with the same numerics:
+
+```console
+$ pip install cosmotile[jax]
+```
+
+See [Differentiable and GPU tiling](jax-backend) for what it can and cannot do, and
+[Performance](performance) for when it is worth it.
+
 ## Before you trust the output
 
 The tiling geometry is exact, but a finite periodic box cannot reproduce every angular

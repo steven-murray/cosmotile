@@ -69,8 +69,10 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 from scipy.integrate import trapezoid
-from scipy.interpolate import BSpline
 from scipy.special import spherical_jn
+
+from ._spline import MAX_ORDER as _MAX_ORDER
+from ._spline import bspline_dtft
 
 __all__ = [
     "continuum_angular_power",
@@ -78,34 +80,12 @@ __all__ = [
     "interpolation_window",
 ]
 
-_MAX_ORDER = 5
 
 # Bins per oscillation of j_ell^2, and a floor for shells so close that the criterion
 # asks for almost none. See the ``nbin`` discussion in discrete_angular_power.
 _BINS_PER_OSCILLATION = 16
 _MIN_BINS = 100
 _MIN_RADIAL_NODES = 8
-
-
-def _cardinal_bspline_at_integers(order: int) -> np.ndarray:
-    """Sample the centred cardinal B-spline of the given order at integer offsets.
-
-    Returns ``beta(0), beta(1), ..., beta(order // 2)``; the kernel is symmetric, and
-    it vanishes at every larger integer.
-
-    Parameters
-    ----------
-    order
-        The spline order (degree).
-
-    Returns
-    -------
-    samples
-        The non-zero, non-negative-offset integer samples of the kernel.
-    """
-    knots = np.arange(order + 2) - (order + 1) / 2
-    kernel = BSpline.basis_element(knots, extrapolate=False)
-    return np.asarray(kernel(np.arange(order // 2 + 1, dtype=float)), dtype=float)
 
 
 def _interpolation_window_1d(k: np.ndarray, order: int) -> np.ndarray:
@@ -133,12 +113,7 @@ def _interpolation_window_1d(k: np.ndarray, order: int) -> np.ndarray:
     # (circular) inverse of the kernel sampled on the grid. Its Fourier response is the
     # discrete-time transform of those samples, which divides out here. For orders 0
     # and 1 the samples are a delta function and this factor is identically one.
-    samples = _cardinal_bspline_at_integers(order)
-    prefilter = np.full(np.shape(k), samples[0], dtype=float)
-    for offset, value in enumerate(samples[1:], start=1):
-        prefilter = prefilter + 2 * value * np.cos(offset * k)
-
-    return response / prefilter
+    return response / bspline_dtft(k, order)
 
 
 def interpolation_window(kvec: Sequence[np.ndarray], order: int = 1) -> np.ndarray:

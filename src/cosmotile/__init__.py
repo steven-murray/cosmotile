@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Generator, Iterator, Sequence
-from functools import partial
+from collections.abc import Generator, Iterator, Sequence
 from typing import Any, Literal
 
 import numpy as np
@@ -14,8 +13,11 @@ from scipy.interpolate import RectBivariateSpline, RegularGridInterpolator
 from scipy.ndimage import map_coordinates, spline_filter
 from scipy.spatial.transform import Rotation
 
-from . import _version
+from . import _gather, _version
 from . import theory as theory
+from ._geometry import residual_radial_width as residual_radial_width
+from ._plan import PrefilteredCoeval
+from ._spline import MAX_ORDER
 from .cic import cloud_in_cell_los
 
 __version__ = _version.version
@@ -43,28 +45,6 @@ def get_distance_to_shell_from_redshift(
         The distance, in units of pixels, to the shell.
     """
     return (cosmo.comoving_distance(z)).to(un.pixel, un.pixel_scale(cell_size / un.pixel))
-
-
-class PrefilteredCoeval(np.ndarray):
-    """A coeval box to which the spline pre-filter has already been applied.
-
-    Instances are produced by :func:`prefilter_coeval`, and carry the spline order they
-    were filtered for in :attr:`spline_order`. That tag is the whole mechanism: it is
-    what tells :func:`make_lightcone_slice` to skip the filter it would otherwise apply,
-    and what lets it reject a box filtered for the wrong order.
-
-    The tag is deliberately not propagated through views, slices or arithmetic: any
-    array derived from a `PrefilteredCoeval` is a plain array again, because the
-    pre-filter of a derived array is not in general the derived pre-filtered array.
-    """
-
-    #: The interpolation order the box was pre-filtered for, or ``None`` if the tag was
-    #: dropped (e.g. on a slice or the result of an arithmetic operation).
-    spline_order: int | None = None
-
-    def __array_finalize__(self, obj: Any) -> None:
-        """Drop the pre-filter tag on any array derived from this one."""
-        self.spline_order = None
 
 
 def prefilter_coeval(coeval: np.ndarray, order: int) -> PrefilteredCoeval:
@@ -115,16 +95,14 @@ def prefilter_coeval(coeval: np.ndarray, order: int) -> PrefilteredCoeval:
     if not isinstance(order, int):
         raise TypeError("order must be an integer")
 
-    if order < 0 or order > 5:
-        raise ValueError("order must be in the range 0-5")
+    if order < 0 or order > MAX_ORDER:
+        raise ValueError(f"order must be in the range 0-{MAX_ORDER}")
 
     arr = np.asarray(coeval)
     if order > 1:
         arr = spline_filter(arr, order=order, mode="grid-wrap", output=np.float64)
 
-    out: PrefilteredCoeval = arr.view(PrefilteredCoeval)
-    out.spline_order = order
-    return out
+    return PrefilteredCoeval(arr, order)
 
 
 def cell_window(shape: Sequence[int], width: float = 1.0, rfft: bool = False) -> np.ndarray:
@@ -216,44 +194,6 @@ def deconvolve_cell_window(coeval: np.ndarray, width: float = 1.0) -> np.ndarray
     )
 
 
-def residual_radial_width(target_width: float, cell_size: float = 1.0) -> float:
-    r"""Return the extra radial top-hat needed to reach a given total window.
-
-    A cell-averaged box already carries a top-hat of one cell along the line of sight,
-    so averaging over the full ``target_width`` on top of it double-counts: the
-    delivered window would be the product ``sinc(k w / 2) sinc(k D / 2)``, not
-    ``sinc(k w / 2)`` alone. Both expand as ``1 - k^2 x^2 / 24``, so their widths add in
-    quadrature to leading order and the extra width to apply is
-
-    .. math:: w = \sqrt{\max(\Delta r^2 - \Delta^2,\; 0)}.
-
-    That reproduces the wanted window to better than 2.5% out to its own Nyquist for any
-    ratio of the two widths, against up to 36% for applying ``target_width`` directly.
-
-    :func:`make_lightcone_slice_interpolator` does this for you -- its ``radial_width``
-    is the total window you want, and it subtracts ``coeval_cell_width`` itself. This
-    function is the arithmetic behind that, exposed for anyone reasoning about windows
-    on their own.
-
-    Parameters
-    ----------
-    target_width
-        Width of the radial top-hat you want the output to carry, in cells.
-    cell_size
-        Width of the cell top-hat already present in the box, in cells. One by default;
-        pass zero if your box holds point samples rather than cell averages.
-
-    Returns
-    -------
-    width
-        The extra top-hat to apply. Zero when the box already supplies enough.
-    """
-    if target_width < 0 or cell_size < 0:
-        raise ValueError("target_width and cell_size must be non-negative")
-
-    return float(np.sqrt(max(target_width**2 - cell_size**2, 0.0)))
-
-
 def recommended_subsample_level(
     nside: int,
     distance_to_shell: float,
@@ -321,7 +261,7 @@ def _average_subsamples(values: np.ndarray, weights: np.ndarray | None) -> np.nd
 
 
 def _interpolate_coeval(
-    coeval: np.ndarray,
+    coeval: np.ndarray | PrefilteredCoeval,
     *,
     coordinates: np.ndarray,
     order: int,
@@ -344,36 +284,102 @@ def _interpolate_coeval(
     Orders 0 and 1 use interpolating kernels and need no pre-filter, so they are
     passed straight through.
 
+    The gather itself runs through :mod:`cosmotile._gather` when ``numba`` is installed,
+    which is the same mathematics across every core rather than one, and falls back to
+    :func:`scipy.ndimage.map_coordinates` when it is not. The two agree to roundoff, and
+    exactly at order 0; :func:`cosmotile._gather.use_scipy_gather` forces the fallback,
+    which is how you find out whether the kernel is responsible if a number ever moves.
+
+
     The filtered array depends only on ``(coeval, order)``, so when tiling one box onto
     many shells it can be computed once with :func:`prefilter_coeval` instead of once per
-    shell. Such a box arrives here tagged with the order it was filtered for, and that tag
-    -- which only :func:`prefilter_coeval` can produce -- is what suppresses the filter
-    here. No flag is taken on trust and nothing is cached between calls, so this cannot
-    silently filter twice, nor silently reuse a stale filter for a box that has since been
-    mutated. A box tagged for a different order than it is being tiled at is an error.
+    shell. Such a box arrives here as a :class:`~cosmotile.PrefilteredCoeval`, which
+    carries the order it was filtered for, and that -- which only
+    :func:`prefilter_coeval` can produce -- is what suppresses the filter here. A box
+    filtered for a different order than it is being tiled at is an error.
     """
-    tagged_order = getattr(coeval, "spline_order", None)
+    if isinstance(coeval, PrefilteredCoeval):
+        if coeval.order != order:
+            raise ValueError(
+                f"coeval was pre-filtered for order {coeval.order}, but is being "
+                f"interpolated at order {order}. Pre-filter at the order you will tile with."
+            )
+        values_in = np.asarray(coeval.coefficients)
+    else:
+        values_in = np.asarray(coeval)
+        if order > 1:
+            values_in = spline_filter(values_in, order=order, mode="grid-wrap", output=np.float64)
 
-    if tagged_order is not None and tagged_order != order:
-        raise ValueError(
-            f"coeval was pre-filtered for order {tagged_order}, but is being "
-            f"interpolated at order {order}. Pre-filter at the order you will tile with."
-        )
-
-    coeval = np.asarray(coeval)
-    if order > 1 and tagged_order is None:
-        coeval = spline_filter(coeval, order=order, mode="grid-wrap", output=np.float64)
-
-    return _average_subsamples(
-        map_coordinates(
-            coeval,
+    if _gather.available():
+        # The same mathematics as map_coordinates, across every core instead of one.
+        # Agrees with it to roundoff, and exactly at order 0.
+        values = _gather.gather(values_in, coordinates, order).astype(values_in.dtype, copy=False)
+    else:
+        values = map_coordinates(
+            values_in,
             coordinates=coordinates,
             order=order,
             mode="grid-wrap",  # this wraps each dimension.
             prefilter=False,  # we have already pre-filtered above, if required.
-        ),
-        weights,
-    )
+        )
+
+    return _average_subsamples(values, weights)
+
+
+class SliceInterpolator:
+    """A coeval box interpolated onto one fixed set of shell coordinates.
+
+    Built by :func:`make_lightcone_slice_interpolator`, and callable on any box of the
+    right shape: the coordinates, order and sub-sample weights are fixed at construction,
+    so tiling many fields onto the same shell costs one geometry setup, not one per field.
+
+    This was a :func:`functools.partial` before version 2.0, with the origin stapled on
+    as an attribute. It is a class now so that the contract is inspectable and typed,
+    but :attr:`keywords` and :attr:`origin` are kept so that code written against the
+    old object keeps working.
+    """
+
+    def __init__(
+        self,
+        *,
+        coordinates: np.ndarray,
+        order: int,
+        weights: np.ndarray | None = None,
+        origin: np.ndarray | None = None,
+    ) -> None:
+        self.coordinates = coordinates
+        self.order = order
+        self.weights = weights
+        #: The shell centre, kept because it is what turns pixel coordinates back into
+        #: lines of sight -- see :func:`make_lightcone_slice_vector_field`.
+        self.origin = origin
+
+    @property
+    def keywords(self) -> dict[str, Any]:
+        """The interpolation parameters, as :func:`functools.partial` used to expose them."""
+        return {
+            "coordinates": self.coordinates,
+            "order": self.order,
+            "weights": self.weights,
+        }
+
+    def __call__(self, coeval: np.ndarray | PrefilteredCoeval) -> np.ndarray:
+        """Interpolate a coeval box onto the shell.
+
+        Parameters
+        ----------
+        coeval
+            A 3D array of coeval values, or a :class:`~cosmotile.PrefilteredCoeval`
+            tagged with the same order this interpolator was built for.
+
+        Returns
+        -------
+        lightcone_slice
+            The interpolated values, one per output pixel.
+        """
+        return _interpolate_coeval(
+            coeval, coordinates=self.coordinates, order=self.order, weights=self.weights
+        )
 
 
 def _radial_quadrature(
@@ -408,7 +414,7 @@ def make_lightcone_slice_interpolator(
     radial_width: float = 1.0,
     coeval_cell_width: float = 1.0,
     n_radial_samples: int = 1,
-) -> partial[np.ndarray]:
+) -> SliceInterpolator:
     """
     Create a callable interpolator for a lightcone slice.
 
@@ -498,8 +504,8 @@ def make_lightcone_slice_interpolator(
     if distance_to_shell <= 0:
         raise ValueError("distance_to_shell must be positive")
 
-    if interpolation_order < 0 or interpolation_order > 5:
-        raise ValueError("interpolation_order must be in the range 0-5")
+    if interpolation_order < 0 or interpolation_order > MAX_ORDER:
+        raise ValueError(f"interpolation_order must be in the range 0-{MAX_ORDER}")
 
     if not isinstance(interpolation_order, int):
         raise TypeError("interpolation_order must be an integer")
@@ -556,38 +562,18 @@ def make_lightcone_slice_interpolator(
     if n_radial_samples > 1 or n_angular_samples > 1:
         weights = np.repeat(radial_weights, n_angular_samples) / n_angular_samples
 
-    coordmap = partial(
-        _interpolate_coeval,
+    return SliceInterpolator(
         coordinates=pixel_coords,
         order=interpolation_order,
         weights=weights,
+        origin=origin,
     )
-
-    # Save the origin to the coordmap because it's useful for getting
-    # line-of-sight vectors.
-    coordmap.origin = origin
-
-    coordmap.__name__ = "lightcone_slice_interpolator"
-    coordmap.__doc__ = """Interpolate a coeval box to a lightcone slice at a given redshift.
-
-This function is a wrapper around :func:`scipy.ndimage.map_coordinates` created by
-functools.partial.
-
-Parameters
-----------
-coeval
-    A 3D array of float coeval values to be interpolated to the lightcone slice.
-
-Returns
--------
-lightcone_slice
-    A 2D array of float interpolated values on the lightcone slice.
-"""
-    return coordmap
 
 
 def make_lightcone_slice(
-    *, coevals: Sequence[np.ndarray] | np.ndarray, **kwargs: Any
+    *,
+    coevals: Sequence[np.ndarray] | np.ndarray | PrefilteredCoeval,
+    **kwargs: Any,
 ) -> Iterator[np.ndarray]:
     """
     Create a lightcone slice in angular coordinates from two coeval simulations.
@@ -620,22 +606,27 @@ def make_lightcone_slice(
     field
         Each interpolated field on the angular coordinates.
     """
-    if isinstance(coevals, np.ndarray) and coevals.ndim == 3:
-        coevals = [coevals]
+    boxes: list[np.ndarray | PrefilteredCoeval]
+    if isinstance(coevals, PrefilteredCoeval):
+        boxes = [coevals]
+    elif isinstance(coevals, np.ndarray):
+        boxes = [coevals] if coevals.ndim == 3 else list(coevals)
+    else:
+        boxes = list(coevals)
 
-    if any(cv.ndim != 3 for cv in coevals):
+    if any(cv.ndim != 3 for cv in boxes):
         raise ValueError("all coevals must have three dimensions")
 
-    if any(cv.shape != coevals[0].shape for cv in coevals):
+    if any(cv.shape != boxes[0].shape for cv in boxes):
         raise ValueError("all coevals must have the same shape")
 
     coordmap = make_lightcone_slice_interpolator(**kwargs)
-    return map(coordmap, coevals)
+    return map(coordmap, boxes)
 
 
 def make_lightcone_slice_vector_field(
     coeval_vector_fields: Sequence[Sequence[np.ndarray]],
-    interpolator: Callable[[np.ndarray], np.ndarray],
+    interpolator: SliceInterpolator,
 ) -> Iterator[np.ndarray]:
     """
     Interpolate a 3D vector field to a lightcone slice as a line-of-sight component.
@@ -661,17 +652,15 @@ def make_lightcone_slice_vector_field(
     los_component
         The line-of-sight component of each interpolated vector field.
     """
-    keywords = dict(interpolator.keywords)
-
     # Each sub-sample has its own line of sight, so the projection must be done
     # sub-sample by sub-sample and only then averaged. Strip the averaging off the
     # interpolator and re-apply it at the end.
-    weights = keywords.pop("weights", None)
-    raw_interpolator = partial(
-        _interpolate_coeval, coordinates=keywords["coordinates"], order=keywords["order"]
+    weights = interpolator.weights
+    raw_interpolator = SliceInterpolator(
+        coordinates=interpolator.coordinates, order=interpolator.order
     )
 
-    pixel_coords = keywords["coordinates"]
+    pixel_coords = interpolator.coordinates
     if interpolator.origin is not None:
         pixel_coords = pixel_coords - interpolator.origin[:, None]
 
@@ -903,14 +892,16 @@ def apply_rsds(
     los_displacement: np.ndarray,
     distance: np.ndarray,
     n_subcells: int = 4,
+    *,
+    outside: Literal["empty", "edge"] = "edge",
 ) -> np.ndarray:
     """Apply redshift-space distortions to a field.
 
     Notes
     -----
     To ensure that we cover all the slices in the field after the velocities have
-    been applied, we extrapolate the densities and velocities on either end by the
-    maximum velocity offset in the field.
+    been applied, the grid is padded on either end by the largest displacement that can
+    reach it. What that padding *holds* is ``outside``'s business -- see below.
     Then, to ensure we don't pick up cells with zero particles (after displacement),
     we interpolate the slices onto a finer regular grid (in comoving distance) and
     then displace the field on that grid.
@@ -957,6 +948,23 @@ def apply_rsds(
         The number of sub-cells per (smallest) output slice used for the displacement.
         Larger values resolve the displacement field more finely and give a more
         accurate answer, at proportionally greater cost.
+    outside
+        What the field does beyond the range ``distance`` covers.
+
+        ``"edge"`` (the default) continues the field at its first and last slice values,
+        moving with the boundary displacement. Material flows in as well as out, so on
+        average nothing is lost. This is usually what you want: a set of slices is
+        normally a window cut out of a larger field.
+
+        ``"empty"`` takes the field to be zero outside, so material displaced off either
+        end is gone and the total can only fall. Choose it when your slices really are
+        the whole field.
+
+    Returns
+    -------
+    distorted
+        The field in redshift space, same shape as ``field``, again as radial cell
+        averages.
     """
     if field.shape != los_displacement.shape:
         raise ValueError("field and los_displacement must have the same shape")
@@ -966,6 +974,8 @@ def apply_rsds(
         raise ValueError("field and distance must have the same number of slices")
     if not isinstance(n_subcells, (int, np.integer)) or n_subcells < 1:
         raise ValueError("n_subcells must be a positive integer")
+    if outside not in ("empty", "edge"):
+        raise ValueError("outside must be 'empty' or 'edge'")
 
     is_regular = np.allclose(np.diff(np.diff(distance)), 0.0)
     interpolator = RegularGridInterpolator if is_regular else RectBivariateSpline
@@ -986,33 +996,67 @@ def apply_rsds(
     body = np.repeat(widths / n_subcells, n_subcells)
 
     # Pad each end, in whole sub-cells of the adjacent slice, so that material displaced
-    # off the grid still has somewhere to land -- and is correctly counted as gone.
-    n_near = int(np.ceil(max(np.max(los[0]), 0.0) / body[0]))
-    n_far = int(np.ceil(-min(np.min(los[-1]), 0.0) / body[-1]))
+    # off the grid still has somewhere to land -- and is correctly counted as gone. With
+    # ``outside="edge"`` material also flows *in*, from as far out as the boundary
+    # displacement reaches, so both ends are padded by the largest displacement there.
+    if outside == "edge":
+        # How far out material can start and still reach the grid is set by the
+        # displacement *at the boundary* -- which is the interpolator extrapolated half a
+        # slice past the outermost centres, and so can exceed anything at a centre. Ask
+        # it directly rather than guessing from ``los``, and keep a sub-cell of margin.
+        ang = np.arange(field.shape[1])
+        if is_regular:
+            boundary = RegularGridInterpolator(
+                (dist, ang), los, bounds_error=False, fill_value=None
+            )(
+                (
+                    np.repeat(edges[[0, -1]], ang.size),
+                    np.tile(ang, 2),
+                )
+            )
+        else:
+            boundary = RectBivariateSpline(dist, ang, los)(edges[[0, -1]], ang)
+        reach = float(np.max(np.abs(boundary)))
+        n_near = int(np.ceil(reach / body[0])) + 1
+        n_far = int(np.ceil(reach / body[-1])) + 1
+    else:
+        n_near = int(np.ceil(max(np.max(los[0]), 0.0) / body[0]))
+        n_far = int(np.ceil(-min(np.min(los[-1]), 0.0) / body[-1]))
     fine_widths = np.concatenate((np.full(n_near, body[0]), body, np.full(n_far, body[-1])))
     fine_edges = np.concatenate(([edges[0] - n_near * body[0]], np.zeros(fine_widths.size)))
     fine_edges[1:] = fine_edges[0] + np.cumsum(fine_widths)
     fine_grid = 0.5 * (fine_edges[:-1] + fine_edges[1:])
 
     # Refine the field conservatively: every fine cell takes the value of the output
-    # slice it lies in (and the end slices' values beyond the grid). Unlike interpolating
-    # it, this leaves the mean over each output slice untouched, so with no displacement
-    # the refine-displace-average round trip is the identity.
+    # slice it lies in. Unlike interpolating it, this leaves the mean over each output
+    # slice untouched, so with no displacement the refine-displace-average round trip is
+    # the identity.
+    #
+    # What the padding holds is ``outside``'s business, and it is genuinely a choice --
+    # the data say nothing about a field beyond the range they cover.
     values = np.asarray(field)
-    fine_field = np.concatenate(
-        (
-            np.repeat(values[:1], n_near, axis=0),
-            np.repeat(values, n_subcells, axis=0),
-            np.repeat(values[-1:], n_far, axis=0),
-        )
-    )
+    if outside == "edge":
+        pad_near = np.repeat(values[:1], n_near, axis=0)
+        pad_far = np.repeat(values[-1:], n_far, axis=0)
+    else:
+        pad_near = np.zeros((n_near, values.shape[1]))
+        pad_far = np.zeros((n_far, values.shape[1]))
+    fine_field = np.concatenate((pad_near, np.repeat(values, n_subcells, axis=0), pad_far))
 
     # The displacement, by contrast, is a smooth function sampled at the slice centres,
     # so interpolate it -- then express it in units of the local fine cell, which is what
     # cloud-in-cell works in.
+    # Outside the grid the displacement is held at its boundary value rather than
+    # extrapolated. Linear extrapolation grows without bound, so with ``outside="edge"``
+    # the far padding would be flung arbitrarily far and the answer would depend on how
+    # much of it there was; holding it constant is both physical and well defined. Fine
+    # cells *inside* the grid but beyond the outermost slice centres still extrapolate,
+    # which is what the versions before 2.0 did everywhere.
+    probe = np.clip(fine_grid, edges[0], edges[-1]) if outside == "edge" else fine_grid
+
     ang_coords = np.arange(field.shape[1])
     if is_regular:
-        x, y = np.meshgrid(fine_grid, ang_coords, indexing="ij")
+        x, y = np.meshgrid(probe, ang_coords, indexing="ij")
         fine_rsd = interpolator(
             (dist, ang_coords),
             los,
@@ -1020,7 +1064,7 @@ def apply_rsds(
             fill_value=None,
         )((x.flatten(), y.flatten())).reshape(x.shape)
     else:
-        fine_rsd = interpolator(dist, ang_coords, los)(fine_grid, ang_coords)
+        fine_rsd = interpolator(dist, ang_coords, los)(probe, ang_coords)
     fine_rsd = fine_rsd / fine_widths[:, None]
 
     # ``fine_grid`` runs from near to far, but ``los_displacement`` is positive towards

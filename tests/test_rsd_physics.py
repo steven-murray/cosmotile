@@ -392,9 +392,9 @@ def test_refinement_conserves_mass() -> None:
     refinement.
 
     The displacement is chosen to point *inwards* at both ends (away from the observer
-    at the near end, towards it at the far end), so no parcel leaves and, equally
-    importantly, the grid needs no extrapolated padding -- which would bring mass in
-    from outside and is a separate, documented behaviour.
+    at the near end, towards it at the far end), so no parcel leaves; and ``outside`` is
+    set to ``"empty"`` so none arrives either. What is left is the refinement alone,
+    which is what this is about.
     """
     nslice = 128
     distance = make_los_grid(nslice, 500.0)
@@ -411,6 +411,7 @@ def test_refinement_conserves_mass() -> None:
             los_displacement=displacement,
             distance=distance,
             n_subcells=n_subcells,
+            outside="empty",
         )
         assert abs(out.sum() / field.sum() - 1) < 1e-12, f"n_subcells={n_subcells}"
 
@@ -489,3 +490,74 @@ def test_n_subcells_must_be_a_positive_integer() -> None:
                 distance=distance,
                 n_subcells=bad,
             )
+
+
+def test_an_empty_outside_cannot_create_mass() -> None:
+    """With ``outside="empty"`` displacement can only ever remove material.
+
+    Before version 2.0 the padding always held replicated copies of the first and last
+    slices *and* extrapolated the displacement across them without bound, so material
+    that was never there flowed back in: the total could exceed what went in, and the
+    answer depended on how many sub-cells of padding happened to be allocated -- a
+    quantity set by the data, not by physics.
+    """
+    nslice = 96
+    distance = make_los_grid(nslice)
+    radial = np.arange(nslice, dtype=float)
+
+    # A strictly positive field, so "more mass came out than went in" is unambiguous,
+    # and a displacement pointing inward at both ends -- the case that used to leak.
+    field = 1 + 0.5 * np.sin(2 * np.pi * radial / 31)[:, None] * np.ones((1, 5))
+    displacement = np.full((nslice, 5), -2.0)
+    displacement[nslice // 2 :] = 2.0
+
+    out = cmt.apply_rsds(
+        field=field,
+        los_displacement=displacement * un.pixel,
+        distance=distance,
+        n_subcells=4,
+        outside="empty",
+    )
+
+    assert out.sum() <= field.sum() + 1e-9
+    assert (out >= -1e-12).all()
+
+
+def test_the_two_outside_conventions_differ_in_the_direction_they_should() -> None:
+    """``"edge"`` lets material flow in as well as out; ``"empty"`` only out.
+
+    Which is right is the caller's to decide -- the data say nothing about what lies
+    beyond the range they cover -- so the point here is that the choice is real and
+    points the way it claims to.
+    """
+    nslice = 64
+    distance = make_los_grid(nslice)
+    field = np.ones((nslice, 4))
+    # Everything moves towards the observer, so material leaves the near end and, if
+    # there is anything out there, arrives at the far end.
+    displacement = np.full((nslice, 4), 2.0) * un.pixel
+
+    empty = cmt.apply_rsds(
+        field=field, los_displacement=displacement, distance=distance, outside="empty"
+    )
+    edge = cmt.apply_rsds(
+        field=field, los_displacement=displacement, distance=distance, outside="edge"
+    )
+
+    assert empty.sum() < field.sum()
+    assert edge.sum() > empty.sum()
+    # A uniform field translated through a uniform field is unchanged, so 'edge' is the
+    # convention that reproduces it.
+    np.testing.assert_allclose(edge, field, rtol=1e-6)
+
+
+def test_apply_rsds_rejects_an_unknown_outside() -> None:
+    """A typo must not silently pick a convention."""
+    distance = make_los_grid(8)
+    with pytest.raises(ValueError, match="outside must be"):
+        cmt.apply_rsds(
+            field=np.ones((8, 2)),
+            los_displacement=np.zeros((8, 2)) * un.pixel,
+            distance=distance,
+            outside="reflect",
+        )

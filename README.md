@@ -30,6 +30,7 @@ is repackaged and re-tooled.
 
 - Fast tiling of finite, periodic cosmic simulations onto arbitrary angular coordinates.
 - Generate different realizations by translation and rotation.
+- Optional JAX backend: autodiff through the tiling, and GPU acceleration.
 
 ## Installation
 
@@ -39,9 +40,18 @@ You can install _Cosmotile_ via [pip] from [PyPI]:
 $ pip install cosmotile
 ```
 
+For the optional JAX backend — differentiable tiling, and GPU acceleration — install the
+extra:
+
+```console
+$ pip install cosmotile[jax]
+```
+
 ## Usage
 
-Please see the [Command-line Reference] for details.
+Please see the [Usage Guide] for details, and [Accuracy and Limitations] for what the
+output window actually is. If you want gradients through the tiling, or want it to run
+on a GPU, see [Differentiable and GPU tiling].
 
 ## Contributing
 
@@ -81,4 +91,6 @@ applicable, cite https://arxiv.org/abs/1708.00036.
 
 [license]: https://github.com/steven-murray/cosmotile/blob/main/LICENSE
 [contributor guide]: https://github.com/steven-murray/cosmotile/blob/main/CONTRIBUTING.md
-[command-line reference]: https://cosmotile.readthedocs.io/en/latest/usage.html
+[usage guide]: https://cosmotile.readthedocs.io/en/latest/usage.html
+[accuracy and limitations]: https://cosmotile.readthedocs.io/en/latest/accuracy.html
+[differentiable and gpu tiling]: https://cosmotile.readthedocs.io/en/latest/jax-backend.html

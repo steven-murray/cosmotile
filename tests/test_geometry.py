@@ -211,19 +211,32 @@ def test_prefilter_coeval_validates_its_order() -> None:
         cmt.prefilter_coeval(box, 6)
 
 
-def test_prefilter_tag_does_not_survive_derived_arrays() -> None:
-    """Anything derived from a pre-filtered box is a plain array again.
+def test_a_prefiltered_box_refuses_to_be_derived_from() -> None:
+    """A pre-filtered box is not an array, and deriving one from it is an error.
 
-    The pre-filter of a slice is not the slice of the pre-filter, so a tag that
-    propagated through views and arithmetic would license genuinely wrong results. Losing
-    it is the safe direction: an untagged array is simply filtered on its own account, so
-    a derived box is correct -- merely not hoisted.
+    The pre-filter of a slice is not the slice of the pre-filter, and the pre-filter of
+    twice a box is not twice the pre-filter. Either would be silently wrong, so both
+    raise rather than quietly handing back something that looks like a box. To derive a
+    new box, take the coefficients out with ``np.asarray`` and re-filter the result.
     """
     filtered = cmt.prefilter_coeval(np.zeros((8, 8, 8)), 3)
-    assert filtered.spline_order == 3
-    assert filtered[::2].spline_order is None
-    assert (filtered * 2.0).spline_order is None
+    assert filtered.order == 3
+    assert filtered.shape == (8, 8, 8)
+    assert filtered.ndim == 3
+
+    with pytest.raises(TypeError):
+        filtered[::2]
+    with pytest.raises(TypeError):
+        filtered * 2.0
+
     assert np.asarray(filtered).__class__ is np.ndarray
+
+
+def test_spline_order_is_deprecated_but_still_works() -> None:
+    """``.spline_order`` was the v1 spelling of ``.order``; keep it working, loudly."""
+    filtered = cmt.prefilter_coeval(np.zeros((8, 8, 8)), 3)
+    with pytest.warns(DeprecationWarning, match="use .order instead"):
+        assert filtered.spline_order == 3
 
 
 def test_order_zero_returns_exact_box_values(directions: np.ndarray) -> None:

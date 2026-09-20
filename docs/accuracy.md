@@ -375,10 +375,10 @@ from the values it is given.
 
 Orders above 1 also carry a real cost, but you only need to pay it once. By default the
 spline pre-filter is applied to the whole coeval box on every call, so a lightcone of 100
-shells filters the box 100 times — around 0.7 s each for a $256^3$ box, which dominates
-the 0.34 s of interpolation itself. The filtered box depends only on the box and the
-order, not on the shell radius, rotation or origin, so hoist it out of the loop with
-{func}`~cosmotile.prefilter_coeval`:
+shells filters the box 100 times — around 0.8 s each for a $256^3$ box, which utterly
+dominates the 0.02 s of interpolation itself. The filtered box depends only on the box
+and the order, not on the shell radius, rotation or origin, so hoist it out of the loop
+with {func}`~cosmotile.prefilter_coeval`:
 
 ```python
 filtered = cosmotile.prefilter_coeval(coeval, order=3)
@@ -394,21 +394,27 @@ for radius in radii:
 ```
 
 This is bit-identical to the default path — it only moves the work — and takes the
-$256^3$/`nside=256` example from 0.97 s per shell to 0.34 s, i.e. a 100-shell lightcone
-from 97 s to 34 s. Orders 0 and 1 need no filter, so they are unaffected either way.
+$256^3$/`nside=256` example from about 0.82 s per shell to 0.02 s, i.e. a 100-shell
+lightcone from a minute and a half to a couple of seconds. Orders 0 and 1 need no filter,
+so they are unaffected either way. (Those interpolation times assume `numba` is installed,
+which makes the gather about ten times faster; see [Performance](performance).)
 
-There is no flag to set and nothing to keep in sync: `prefilter_coeval` tags its output
-with the order it filtered for, and that tag — which nothing else can produce — is what
-tells the interpolator to skip the filter. A raw box is filtered as before, so the two
-paths cannot be mixed up. Nothing is cached between calls either, so a box you mutate in
-place can never yield a stale shell.
+The return value from `prefilter_coeval` is a custom class that thinly wraps a numpy
+array but also attaches attributes that specify the interpolation order (a
+{class}`~cosmotile.PrefilteredCoeval`). The tiling function recognises these attributes
+and knows that the box has been pre-filtered. An unfiltered box passed into the tiling
+function is filtered within the function itself (with the associated efficiency loss if
+you repeat this multiple times).
 
 The one thing you must get right is the order: a box filtered for order 3 and tiled at
 order 5 holds the wrong coefficients, and raises `ValueError` rather than returning a
-plausible-looking shell. The tag is deliberately dropped by slicing and arithmetic, since
-the pre-filter of a derived array is not the derived pre-filtered array — a derived box is
-therefore still correct, just filtered on its own account rather than hoisted, so re-run
-`prefilter_coeval` on it if you want the saving back.
+plausible-looking shell.
+
+A `PrefilteredCoeval` is deliberately *not* an array: it supports neither indexing nor
+arithmetic, because the pre-filter of a slice is not the slice of the pre-filter and the
+pre-filter of twice a box is not twice the pre-filter. Both would be quietly wrong, so
+both raise `TypeError`. To derive a new box, take the coefficients out with
+`np.asarray` and run `prefilter_coeval` on the result.
 
 ### Sampling versus averaging: `subsample_level`
 
@@ -641,11 +647,28 @@ lies in, so with zero displacement the whole refine–displace–average round t
 exactly the identity, at any `n_subcells`. The residual error is therefore the
 cloud-in-cell kernel alone, which is a smoothing of roughly one sub-cell.
 
-**Padding at the ends.** To catch material displaced in from beyond the grid, the field
-and the displacement are extrapolated past the first and last slices. Mass is conserved
-exactly for parcels that stay on the grid, but the end slices can gain material from
-that extrapolated region — so treat the outermost few slices of a lightcone as you would
-any other boundary.
+**What lies outside: `outside`.** Displacement moves material across the ends of your
+grid in both directions, and your data say nothing about what is out there. You need to
+specify it with a keyword.
+
+`outside="edge"` (the default) continues the field at its first and last slice values,
+moving with the boundary displacement. Material flows in as well as out, so on average
+nothing is lost. Choose this when your slices are a window cut out of something larger —
+e.g. a chunk of a longer lightcone — which is almost always the case. It is also the
+convention under which a uniform field displaced uniformly comes back unchanged.
+
+`outside="empty"` takes the field to be zero beyond the range `distance` covers. Material
+displaced off either end is gone, nothing flows in, and the total can only diminish.
+Choose this when your slices really are the entire field.
+
+Under either convention the result is **independent of how much padding is allocated**,
+provided there is enough of it, because the displacement outside the grid is held at its
+boundary value rather than extrapolated. (Versions before 2.0 extrapolated it, which
+grows without bound, so the total could exceed what went in and the answer depended on
+how much padding the data happened to call for.)
+
+In either case, the best option is to supply a wider range of slices than you intend to
+keep for analysis, so that the boundary choices do not affect your results.
 
 ## Reproducing these figures
 

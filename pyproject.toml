@@ -29,7 +29,6 @@ dynamic = ["version"]
 
 
 dependencies = [
-    "click>=8.0.1",
     "numpy>=1.23.4",
     "scipy>=1.9.3",
     "astropy>=5.1.1",
@@ -45,9 +44,16 @@ changelog = "https://github.com/steven-murray/cosmotile/releases"
 perf = [
     "numba>=0.56.4",
 ]
+jax = [
+    # 0.5 for jax.enable_x64 as a context manager and tree_util.register_dataclass.
+    "jax>=0.5",
+]
+# Only needed to regenerate the committed figures; the docs build does not use it.
+figures = [
+    "matplotlib>=3.6",
+]
 dev = [
     "sphinx>=4.3.2",
-    "sphinx-click>=3.0.2",
     "sphinx-autobuild>=2021.3.14",
     "myst-parser>=0.16.1",
     "furo>=2021.11.12",
@@ -56,12 +62,12 @@ dev = [
     "pytest-cov>=3.0.0",
     "pre-commit",
     'ruff',
-    "powerbox>=0.8",
+    "powerbox>=1.0",
     "healpy>=1.16",
 ]
 
 all = [
-    "cosmotile[perf,dev]"
+    "cosmotile[perf,dev,jax,figures]"
 ]
 
 [tool.coverage.paths]
@@ -169,6 +175,10 @@ extend-select = [
 ]
 "docs/make_accuracy_figures.py" = [
     "T",  # it is a command-line script; printing where it wrote the figures is the point
+]
+"benchmarks/*.py" = [
+    "T",     # likewise: these are scripts, and progress on a long sweep is the point
+    "BLE",   # a backend that OOMs is a result to record, not a crash
 ]
 
 [tool.ruff.lint.pydocstyle]
