@@ -130,7 +130,7 @@ POINTS TO MAKE:
 `cosmotile` aims to solve a single important step in the production of mock observations for pipeline validation and inference in cosmology: the conversion of
 coeval grid-based simulations at a series of cosmic times (redshifts) into a continuous
 observable lightcone.
-It was originally developed in the context of 21cm cosmology, in which simulators (e.g. `21cmFAST`, `SimFast21`, `zreion`) typically produce 3D fields of various quantities like the 21cm brightness temperature and neutral hydrogen fraction.
+It was originally developed in the context of 21cm cosmology, in which simulators (e.g. `21cmFAST`; `SimFast21` @Santos2010; `zreion`, @Battaglia2013) typically produce 3D fields of various quantities like the 21cm brightness temperature and neutral hydrogen fraction.
 Nevertheless, the interface of `cosmotile` is rather generic, and can work just as well to produce any curved-sky observable out of a periodic box (e.g. tSZ/kSZ maps,
 arbitrary line-intensity maps or weak-lensing shells).
 
