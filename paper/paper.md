@@ -12,6 +12,9 @@ authors:
   - name: Steven G. Murray
     orcid: 0000-0003-3059-3823
     affiliation: 1
+  - name: Nithyanandan Thyagarajan
+    orcid: 0000-0003-1602-7868
+    affiliation: 2
   # TODO: decide the co-author list. Candidates, and what they'd be credited for:
   #   - Nithyanandan Thyagarajan (orcid 0000-0003-1602-7868) -- original algorithm
   #     (AstroUtils `cosmotile` module).
@@ -20,6 +23,7 @@ authors:
 affiliations:
   - name: Scuola Normale Superiore, Pisa, Italy
     index: 1
+  - name: CSIRO, Space and Astronomy, Perth, Australia
 date: TODO
 bibliography: paper.bib
 ---
