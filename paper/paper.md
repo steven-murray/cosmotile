@@ -12,18 +12,29 @@ authors:
   - name: Steven G. Murray
     orcid: 0000-0003-3059-3823
     affiliation: 1
+  - name: Paul La Plante
+    orcid: 0000-0002-4693-0102
+    affiliation: 2
   - name: Nithyanandan Thyagarajan
     orcid: 0000-0003-1602-7868
-    affiliation: 2
+    affiliation: 3
+  - name: Piyanat Kittiwisit
+    orcid: 0000-0003-2410-1424
+    affiliation: 4
   # TODO: decide the co-author list. Candidates, and what they'd be credited for:
   #   - Nithyanandan Thyagarajan (orcid 0000-0003-1602-7868) -- original algorithm
   #     (AstroUtils `cosmotile` module).
   #   - Piyanat Kittiwisit (orcid 0000-0003-2410-1424) -- first standalone packaging.
   #   - Paul La Plante (orcid)
 affiliations:
-  - name: Scuola Normale Superiore, Pisa, Italy
+  - name: Stellenbosch University, Stellenbosch, South Africa
     index: 1
+  - name: Google
+    index: 2
   - name: CSIRO, Space and Astronomy, Perth, Australia
+    index: 3
+  - name: University of the Western Cape, Cape Town, South Africa
+    index: 4
 date: TODO
 bibliography: paper.bib
 ---
