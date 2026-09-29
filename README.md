@@ -28,8 +28,18 @@ is repackaged and re-tooled.
 
 ## Features
 
-- Fast tiling of finite, periodic cosmic simulations onto arbitrary angular coordinates.
+- Fast tiling of periodic grid-based cosmological simulations onto arbitrary angular
+  coordinates on arbitrary radial shells.
 - Generate different realizations by translation and rotation.
+- Format-agnostic input and output (works with `numpy` arrays rather
+  than relying on specific file formats).
+- Support for efficient lightconing over multiple fields with the same geometry.
+- Support for creating lightcones of vector quantities, including projection of the
+  vector onto the radial coordinate (e.g. creating a line-of-sight velocity field
+  from an input 3D velocity field)
+- Functions for perturbing lightcone shells due to redshift-space distortions (RSDs).
+- Rigorous tests and benchmarks, including a `theory` module that helps in predicting
+  the statistics of the shell from those of the 3D inputs.
 - Optional JAX backend: autodiff through the tiling, and GPU acceleration.
 
 ## Installation
@@ -73,7 +83,7 @@ please [file an issue] along with a detailed description.
 This project was generated from [@cjolowicz]'s [Hypermodern Python Cookiecutter] template.
 
 The algorithm used in this repository is derived from the `cosmotile` module in
-https://github.com/nithyanandan/AstruUtils, which was later modularised in
+https://github.com/nithyanandan/AstroUtils, which was later modularised in
 https://github.com/piyanatk/cosmotile.
 
 ## Acknowledgments
