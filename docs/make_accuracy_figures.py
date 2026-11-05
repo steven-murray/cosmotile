@@ -2,7 +2,10 @@
 
 Run from the repository root with the test extras installed::
 
-    python docs/make_accuracy_figures.py
+    python docs/make_accuracy_figures.py [--format {svg,pdf}]
+
+``--format pdf`` writes PDFs instead of SVGs (and of PNGs for the sky maps), e.g. for
+the paper.
 
 The figures are committed, so that building the documentation needs neither
 ``powerbox``, ``healpy`` nor ``matplotlib``. Re-run this only when the underlying
@@ -11,6 +14,7 @@ behaviour changes.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from itertools import pairwise
 from pathlib import Path
@@ -32,6 +36,14 @@ from conftest import band_limited_powerlaw, gaussian_box, mode_grid
 
 OUT = Path(__file__).parent / "figures"
 mpl.rcParams.update({"figure.dpi": 110, "font.size": 9, "savefig.bbox": "tight"})
+
+FORMAT = "svg"
+
+
+def save(fig, name: str, raster: bool = False, **kwargs) -> None:
+    """Save ``fig`` in the chosen format; ``raster`` figures stay PNG unless PDF is asked for."""
+    suffix = "pdf" if FORMAT == "pdf" else ("png" if raster else FORMAT)
+    fig.savefig(OUT / f"{name}.{suffix}", **kwargs)
 
 
 def figure_validity_window() -> None:
@@ -119,7 +131,7 @@ def figure_validity_window() -> None:
         fontsize=9,
     )
 
-    fig.savefig(OUT / "validity_window.svg")
+    save(fig, "validity_window")
     plt.close(fig)
 
 
@@ -169,7 +181,7 @@ def figure_interpolation_order() -> None:
     axis.legend(frameon=False, fontsize=8, ncols=2, loc="lower left")
     axis.set_title("Interpolating a single Fourier mode", fontsize=9)
 
-    fig.savefig(OUT / "interpolation_order.svg")
+    save(fig, "interpolation_order")
     plt.close(fig)
 
 
@@ -228,7 +240,7 @@ def figure_deficit_versus_radius() -> None:
     axis.legend(frameon=False, fontsize=8, loc="lower right")
     axis.set_title("Large-scale power lost to the finite box", fontsize=9)
 
-    fig.savefig(OUT / "large_scale_deficit.svg")
+    save(fig, "large_scale_deficit")
     plt.close(fig)
 
 
@@ -254,7 +266,7 @@ def figure_angular_scale() -> None:
             max=limit,
             cmap="RdBu_r",
         )
-    fig.savefig(OUT / "angular_scale.png", dpi=100, bbox_inches="tight")
+    save(fig, "angular_scale", raster=True, dpi=100)
     plt.close(fig)
 
 
@@ -299,7 +311,7 @@ def figure_pixel_window() -> None:
     axis.legend(frameon=False, fontsize=8, loc="lower left")
     axis.set_title(rf"Averaging over the pixel, $N_{{\rm side}}={nside}$", fontsize=9)
 
-    fig.savefig(OUT / "pixel_window.svg")
+    save(fig, "pixel_window")
     plt.close(fig)
 
 
@@ -342,7 +354,7 @@ def figure_n_subcells_convergence() -> None:
     axis.legend(frameon=False, fontsize=8)
     axis.set_title("Convergence of the redshift-space mapping", fontsize=9)
 
-    fig.savefig(OUT / "n_subcells_convergence.svg")
+    save(fig, "n_subcells_convergence")
     plt.close(fig)
 
 
@@ -410,12 +422,16 @@ def figure_cell_window() -> None:
     left.set_ylabel("max error against the underlying field")
     left.legend(frameon=False, fontsize=8, loc="lower right")
 
-    fig.savefig(OUT / "cell_window.svg")
+    save(fig, "cell_window")
     plt.close(fig)
 
 
 def main() -> None:
     """Build every figure."""
+    global FORMAT
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--format", choices=["svg", "pdf"], default="svg", help="vector format")
+    FORMAT = parser.parse_args().format
     OUT.mkdir(exist_ok=True)
     figure_validity_window()
     figure_interpolation_order()

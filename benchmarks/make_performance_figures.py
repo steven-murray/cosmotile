@@ -1,9 +1,10 @@
 """Draw the performance figures from a committed benchmark run.
 
 Reads ``benchmarks/results/latest.json`` -- produced by ``run_benchmarks.py`` -- and
-writes SVGs into ``docs/figures/``. The output is committed, so building the
-documentation needs neither ``matplotlib`` nor a GPU, in the same spirit as
-``docs/make_accuracy_figures.py``. Re-run it only when the numbers change::
+writes SVGs (or PDFs, with ``--format pdf``) into ``docs/figures/``. The output is
+committed, so building the documentation needs neither ``matplotlib`` nor a GPU, in the
+same spirit as ``docs/make_accuracy_figures.py``. Re-run it only when the numbers
+change::
 
     python benchmarks/make_performance_figures.py
 
@@ -87,7 +88,65 @@ def throughput_by_order(rows: list[dict[str, Any]], box_size: int, nside: int, o
         color="#555555",
     )
     fig.tight_layout()
-    fig.savefig(out, format="svg")
+    fig.savefig(out)
+    plt.close(fig)
+
+
+def throughput_scaling(
+    rows: list[dict[str, Any]], box_size: int, nside: int, order: int, out: Path
+) -> None:
+    """Throughput against interpolation order, box size and nside, one line per backend.
+
+    Each panel varies one parameter and holds the other two at ``box_size``, ``nside``
+    and ``order``. Only HEALPix nested-ordering rows are used.
+    """
+    rows = _select(rows, healpix_order="nested")
+    if not rows:
+        raise SystemExit("no nested-ordering rows in the results")
+
+    panels = [
+        ("order", "interpolation order", {"box_size": box_size, "nside": nside}),
+        ("box_size", "box side $N$ / cells", {"nside": nside, "order": order}),
+        ("nside", r"$N_{\rm side}$", {"box_size": box_size, "order": order}),
+    ]
+    fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.6), sharey=True, layout="constrained")
+
+    for ax, (key, xlabel, fixed) in zip(axes, panels, strict=True):
+        for backend, dtype, colour, label in SERIES:
+            found = sorted(
+                _select(rows, backend=backend, dtype=dtype, **fixed), key=lambda r: r[key]
+            )
+            if not found:
+                continue
+            xs = [r[key] for r in found]
+            ys = [r["mpix_per_second"] for r in found]
+            ax.plot(xs, ys, "o-", ms=4, lw=1.3, color=colour, label=label)
+            # Noisy measurements are drawn hollow, as in the bar chart.
+            noisy = [(x, y) for x, y, r in zip(xs, ys, found, strict=True) if r.get("noisy")]
+            if noisy:
+                ax.plot(*zip(*noisy, strict=True), "o", ms=4, mfc="white", color=colour)
+        ax.set_yscale("log")
+        if key != "order":
+            ax.set_xscale("log", base=2)
+        xticks = sorted({r[key] for r in rows if all(r.get(k) == v for k, v in fixed.items())})
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([str(x) for x in xticks])
+        ax.minorticks_off()
+        ax.set_xlabel(xlabel)
+        ax.grid(alpha=0.25, linewidth=0.5)
+        ax.set_axisbelow(True)
+        ax.set_title(
+            ", ".join(
+                f"{name} {value}" if name == "order" else f"{name}={value}"
+                for name, value in {"box_size": box_size, "nside": nside, "order": order}.items()
+                if name in fixed
+            ).replace("box_size", "$N$"),
+            fontsize=9,
+        )
+
+    axes[0].set_ylabel("throughput / Mpix s$^{-1}$")
+    axes[0].legend(fontsize=7.5, frameon=False, loc="upper right")
+    fig.savefig(out)
     plt.close(fig)
 
 
@@ -127,7 +186,7 @@ def speedup_over_default(rows: list[dict[str, Any]], nside: int, out: Path) -> N
     ax.set_axisbelow(True)
     ax.legend(fontsize=8, title="box")
     fig.tight_layout()
-    fig.savefig(out, format="svg")
+    fig.savefig(out)
     plt.close(fig)
 
 
@@ -138,16 +197,22 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("docs/figures"))
     parser.add_argument("--box-size", type=int, default=256)
     parser.add_argument("--nside", type=int, default=256)
+    parser.add_argument("--order", type=int, default=3, help="order held fixed in the scaling plot")
+    parser.add_argument("--format", choices=["svg", "pdf"], default="svg")
     args = parser.parse_args()
 
     rows = json.loads(args.results.read_text())["rows"]
     args.out.mkdir(parents=True, exist_ok=True)
 
-    by_order = args.out / "throughput_by_order.svg"
+    by_order = args.out / f"throughput_by_order.{args.format}"
     throughput_by_order(rows, args.box_size, args.nside, by_order)
     print(f"wrote {by_order}")
 
-    speedup = args.out / "gpu_speedup.svg"
+    scaling = args.out / f"throughput_scaling.{args.format}"
+    throughput_scaling(rows, args.box_size, args.nside, args.order, scaling)
+    print(f"wrote {scaling}")
+
+    speedup = args.out / f"gpu_speedup.{args.format}"
     speedup_over_default(rows, args.nside, speedup)
     print(f"wrote {speedup}")
 
